@@ -1,0 +1,108 @@
+package api
+
+import (
+	"time"
+
+	"github.com/GGingGGang/svc-core/internal/service"
+)
+
+// validStatuses backs the manual status check in the PATCH handler, which
+// (unlike create) decodes a raw JSON map rather than a validator-tagged
+// struct so it can distinguish "field omitted" from "field set to null".
+var validStatuses = map[string]bool{"confirmed": true, "tentative": true, "cancelled": true}
+
+type reminderRequest struct {
+	// no "required" here: 0 (remind exactly at start_at) is a valid value
+	// and validator's required treats the zero value as absent.
+	MinutesBefore int32  `json:"minutes_before" validate:"gte=0"`
+	Channel       string `json:"channel" validate:"required,oneof=push email none"`
+}
+
+type reminderResponse struct {
+	ID            string    `json:"id"`
+	ScheduleID    string    `json:"schedule_id"`
+	MinutesBefore int32     `json:"minutes_before"`
+	Channel       string    `json:"channel"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func toReminderResponse(r *service.Reminder) reminderResponse {
+	return reminderResponse{
+		ID:            r.ID.String(),
+		ScheduleID:    r.ScheduleID.String(),
+		MinutesBefore: r.MinutesBefore,
+		Channel:       r.Channel,
+		CreatedAt:     r.CreatedAt,
+	}
+}
+
+type createScheduleRequest struct {
+	Title        string            `json:"title" validate:"required,max=255"`
+	Description  *string           `json:"description,omitempty"`
+	Location     *string           `json:"location,omitempty" validate:"omitempty,max=255"`
+	StartAt      time.Time         `json:"start_at" validate:"required"`
+	EndAt        *time.Time        `json:"end_at,omitempty"`
+	AllDay       bool              `json:"all_day"`
+	Status       string            `json:"status,omitempty" validate:"omitempty,oneof=confirmed tentative cancelled"`
+	Source       string            `json:"source,omitempty" validate:"omitempty,oneof=manual ai"`
+	ExtractionID *string           `json:"extraction_id,omitempty" validate:"omitempty,uuid"`
+	Reminders    []reminderRequest `json:"reminders,omitempty" validate:"omitempty,dive"`
+}
+
+type bulkDeleteRequest struct {
+	IDs []string `json:"ids" validate:"required,min=1,max=100,dive,uuid"`
+}
+
+type scheduleResponse struct {
+	ID           string             `json:"id"`
+	UserID       string             `json:"user_id"`
+	Title        string             `json:"title"`
+	Description  *string            `json:"description"`
+	Location     *string            `json:"location"`
+	StartAt      time.Time          `json:"start_at"`
+	EndAt        *time.Time         `json:"end_at"`
+	AllDay       bool               `json:"all_day"`
+	Status       string             `json:"status"`
+	Source       string             `json:"source"`
+	ExtractionID *string            `json:"extraction_id,omitempty"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	Reminders    []reminderResponse `json:"reminders,omitempty"`
+}
+
+func toScheduleResponse(s *service.Schedule) scheduleResponse {
+	resp := scheduleResponse{
+		ID:          s.ID.String(),
+		UserID:      s.UserID.String(),
+		Title:       s.Title,
+		Description: s.Description,
+		Location:    s.Location,
+		StartAt:     s.StartAt,
+		EndAt:       s.EndAt,
+		AllDay:      s.AllDay,
+		Status:      s.Status,
+		Source:      s.Source,
+		CreatedAt:   s.CreatedAt,
+		UpdatedAt:   s.UpdatedAt,
+	}
+	if s.ExtractionID != nil {
+		id := s.ExtractionID.String()
+		resp.ExtractionID = &id
+	}
+	if len(s.Reminders) > 0 {
+		resp.Reminders = make([]reminderResponse, 0, len(s.Reminders))
+		for _, r := range s.Reminders {
+			rem := r
+			resp.Reminders = append(resp.Reminders, toReminderResponse(&rem))
+		}
+	}
+	return resp
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	v := t.UTC()
+	return &v
+}

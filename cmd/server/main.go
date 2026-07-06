@@ -4,28 +4,41 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/GGingGGang/svc-core/internal/api"
+	"github.com/GGingGGang/svc-core/internal/config"
+	"github.com/GGingGGang/svc-core/internal/db"
+	"github.com/GGingGGang/svc-core/internal/service"
 )
 
 var version = "dev" // -ldflags "-X main.version=<GIT_SHA>"
 
 func main() {
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8080"
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	sqlDB, err := db.Connect(ctx, cfg)
+	if err != nil {
+		log.Fatalf("connect db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	handler := api.NewHandler(service.New(sqlDB))
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: api.Router(),
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: api.Router(handler),
 	}
 
-	log.Printf("svc-core %s listening on :%s", version, port)
+	log.Printf("svc-core %s listening on :%s", version, cfg.HTTPPort)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -34,19 +47,16 @@ func main() {
 		}
 	}()
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-
 	select {
 	case err := <-errCh:
 		log.Fatalf("server failed: %v", err)
-	case s := <-sig:
-		log.Printf("received %s, shutting down", s)
+	case <-ctx.Done():
+		log.Printf("shutdown signal received")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
 }

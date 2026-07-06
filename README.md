@@ -1,8 +1,6 @@
-# k8s-test-core-server
+# svc-core
 
 Go 1.23 / chi — schedule domain API + AI (Gemini) text extraction.
-
-## Status
 
 ## Ports
 
@@ -65,5 +63,3 @@ docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t core .
 | DELETE | `/schedules/{id}/reminders/{reminderId}` | Remove a reminder |
 
 Accessing another user's schedule (or a nonexistent one) always returns 404, never 403.
-
-## Roadmap

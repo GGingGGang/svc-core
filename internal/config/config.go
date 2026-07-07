@@ -15,8 +15,9 @@ type Config struct {
 	DBUser     string `env:"DB_USER,required"`
 	DBPassword string `env:"DB_PASSWORD,required"`
 	DBName     string `env:"DB_NAME,required"`
-	// DBTLS toggles `tls=true` on the MySQL DSN. HeatWave requires
-	// ssl-mode=REQUIRED, but the flag exists so local/testcontainers MySQL
+	// DBTLS toggles `tls=skip-verify` on the MySQL DSN (encrypt without
+	// verifying the server cert — HeatWave's cert has no IP SAN, so full
+	// verification fails). The flag exists so local/testcontainers MySQL
 	// (no TLS listener) can still be exercised.
 	DBTLS bool `env:"DB_TLS" envDefault:"true"`
 }

@@ -36,7 +36,7 @@ func Connect(ctx context.Context, cfg config.Config) (*sql.DB, error) {
 func dsn(cfg config.Config) string {
 	tls := "false"
 	if cfg.DBTLS {
-		tls = "true"
+		tls = "skip-verify"
 	}
 	return fmt.Sprintf(
 		"%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=UTC&tls=%s",

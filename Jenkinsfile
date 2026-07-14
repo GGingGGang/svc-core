@@ -31,6 +31,15 @@ pipeline {
       }
     }
 
+    stage('Image Scan') {
+      steps {
+        trivyImageScan(
+          image: env.IMAGE,
+          tag: env.TAG
+        )
+      }
+    }
+
     stage('Bump') {
       steps {
         deployBump(service: env.SVC, image: env.IMAGE, tag: env.TAG)

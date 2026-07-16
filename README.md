@@ -20,14 +20,14 @@ DB_NAME=             # required
 DB_TLS=true          # default true (HeatWave requires TLS); set false for local/testcontainers MySQL
 ```
 
-Auth (1M only): every `/schedules*` request requires an `X-User-Id: <uuid>` header (temporary — replaced by JWKS validation in 2M).
+Auth (temporary): every `/schedules*` request requires an `X-User-Id: <uuid>` header — cluster-internal placeholder until it is replaced by JWKS-based JWT validation.
 
 ## Database
 
 ```bash
 # golang-migrate (db/migrations/000001_init.{up,down}.sql)
 migrate -path db/migrations -database "mysql://$DSN" up
-# sqlc 코드 생성 (db/queries → internal/repo/sqlc)
+# sqlc 코드 생성 (db/queries → internal/repo)
 sqlc generate
 ```
 
@@ -35,8 +35,9 @@ sqlc generate
 
 ```bash
 go mod download
-docker compose up -d mysql redis kafka
-go run ./cmd/server
+docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=core mysql:8
+migrate -path db/migrations -database "mysql://root:root@tcp(localhost:3306)/core" up
+DB_HOST=127.0.0.1 DB_USER=root DB_PASSWORD=root DB_NAME=core DB_TLS=false go run ./cmd/server
 go test ./...
 ```
 

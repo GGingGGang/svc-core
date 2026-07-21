@@ -2,14 +2,20 @@
 
 // Integration tests spin up a real MySQL container (testcontainers-go) and
 // exercise the HTTP API end to end: schedule CRUD, reminders sub-resource,
-// bulk-delete, and user_id scoping (cross-user access must 404, never 403
-// or leak another user's data). Requires a running Docker daemon; run with
-// `go test -tags=integration ./...`.
+// bulk-delete, user_id scoping (cross-user access must 404, never 403 or
+// leak another user's data), and JWT authentication (../PLAN.md §4.3). The
+// auth service does not need to be running: a self-generated ES256 key pair
+// is served as a JWKS from a local httptest server, and tokens are minted
+// and signed against that same key in-process. Requires a running Docker
+// daemon; run with `go test -tags=integration ./...`.
 package api_test
 
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -20,11 +26,21 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+	"github.com/lestrrat-go/jwx/v2/jwa"
+	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/stretchr/testify/require"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 
 	"github.com/GGingGGang/svc-core/internal/api"
+	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 	"github.com/GGingGGang/svc-core/internal/service"
+)
+
+const (
+	testIssuer   = "https://auth.test.example/"
+	testAudience = "core"
+	testKeyID    = "test-kid-1"
 )
 
 type reminderJSON struct {
@@ -44,11 +60,77 @@ type scheduleJSON struct {
 	Reminders []reminderJSON `json:"reminders"`
 }
 
+// jwksFixture is a self-signed ES256 key pair served as a JWKS from a local
+// httptest server, standing in for the auth service's real
+// /.well-known/jwks.json for the duration of a test.
+type jwksFixture struct {
+	server  *httptest.Server
+	url     string
+	private jwk.Key
+}
+
+func newJWKSFixture(t *testing.T) *jwksFixture {
+	t.Helper()
+
+	raw, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	priv, err := jwk.FromRaw(raw)
+	require.NoError(t, err)
+	require.NoError(t, priv.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, priv.Set(jwk.AlgorithmKey, jwa.ES256))
+
+	pub, err := jwk.PublicKeyOf(priv)
+	require.NoError(t, err)
+	require.NoError(t, pub.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, pub.Set(jwk.AlgorithmKey, jwa.ES256))
+
+	set := jwk.NewSet()
+	require.NoError(t, set.AddKey(pub))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(set))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	return &jwksFixture{server: srv, url: srv.URL + "/.well-known/jwks.json", private: priv}
+}
+
+// mint signs an access token for subject (the user id) using the fixture's
+// private key, matching the claim shape ../PLAN.md §4.1 requires from auth.
+func (f *jwksFixture) mint(t *testing.T, subject string, ttl time.Duration) string {
+	t.Helper()
+	return f.mintWithClaims(t, subject, testIssuer, []string{testAudience}, ttl)
+}
+
+func (f *jwksFixture) mintWithClaims(t *testing.T, subject, issuer string, audience []string, ttl time.Duration) string {
+	t.Helper()
+	now := time.Now()
+	tok, err := jwt.NewBuilder().
+		Issuer(issuer).
+		Subject(subject).
+		Audience(audience).
+		IssuedAt(now).
+		Expiration(now.Add(ttl)).
+		JwtID(uuid.New().String()).
+		Claim("scope", "read:schedules write:schedules").
+		Build()
+	require.NoError(t, err)
+
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.ES256, f.private))
+	require.NoError(t, err)
+	return string(signed)
+}
+
 // setupServer starts a MySQL container, applies the golang-migrate up
 // migration via the image's docker-entrypoint-initdb.d mechanism, and
-// returns an httptest server wired to the real DB through the same
-// api.Router/service.Service stack cmd/server/main.go uses.
-func setupServer(t *testing.T) *httptest.Server {
+// returns an httptest server wired to the real DB and a JWKS-backed JWT auth
+// middleware through the same api.Router/service.Service stack
+// cmd/server/main.go uses.
+func setupServer(t *testing.T) (*httptest.Server, *jwksFixture) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -74,13 +156,17 @@ func setupServer(t *testing.T) *httptest.Server {
 		return db.PingContext(ctx) == nil
 	}, 30*time.Second, 500*time.Millisecond, "db should become reachable")
 
+	jwks := newJWKSFixture(t)
+	jwtAuth, err := authmw.NewJWTAuth(jwks.url, testIssuer, testAudience)
+	require.NoError(t, err)
+
 	handler := api.NewHandler(service.New(db))
-	srv := httptest.NewServer(api.Router(handler))
+	srv := httptest.NewServer(api.Router(handler, jwtAuth.Middleware))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, jwks
 }
 
-func doRequest(t *testing.T, client *http.Client, method, url, userID string, body any) (int, []byte) {
+func doRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {
 	t.Helper()
 
 	var reader io.Reader
@@ -95,8 +181,8 @@ func doRequest(t *testing.T, client *http.Client, method, url, userID string, bo
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if userID != "" {
-		req.Header.Set("X-User-Id", userID)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := client.Do(req)
@@ -109,11 +195,13 @@ func doRequest(t *testing.T, client *http.Client, method, url, userID string, bo
 }
 
 func TestSchedulesIntegration(t *testing.T) {
-	srv := setupServer(t)
+	srv, jwks := setupServer(t)
 	client := srv.Client()
 
-	userA := uuid.New().String()
-	userB := uuid.New().String()
+	userAID := uuid.New().String()
+	userBID := uuid.New().String()
+	userA := jwks.mint(t, userAID, time.Hour)
+	userB := jwks.mint(t, userBID, time.Hour)
 
 	t.Run("create, get, list happy path", func(t *testing.T) {
 		status, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules", userA, map[string]any{
@@ -277,8 +365,42 @@ func TestSchedulesIntegration(t *testing.T) {
 		require.Equal(t, http.StatusOK, status)
 	})
 
-	t.Run("missing X-User-Id is unauthorized", func(t *testing.T) {
+	t.Run("missing bearer token is unauthorized", func(t *testing.T) {
 		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", "", nil)
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("malformed bearer token is unauthorized", func(t *testing.T) {
+		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", "not-a-jwt", nil)
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("token signed by a different key is unauthorized", func(t *testing.T) {
+		otherKey := newJWKSFixture(t) // its public key is never registered with the server's JWKS
+		forged := otherKey.mint(t, uuid.New().String(), time.Hour)
+
+		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", forged, nil)
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("expired token is unauthorized", func(t *testing.T) {
+		expired := jwks.mint(t, uuid.New().String(), -time.Minute)
+
+		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", expired, nil)
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("wrong audience is unauthorized", func(t *testing.T) {
+		wrongAud := jwks.mintWithClaims(t, uuid.New().String(), testIssuer, []string{"some-other-service"}, time.Hour)
+
+		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", wrongAud, nil)
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("wrong issuer is unauthorized", func(t *testing.T) {
+		wrongIss := jwks.mintWithClaims(t, uuid.New().String(), "https://not-auth.example/", []string{testAudience}, time.Hour)
+
+		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", wrongIss, nil)
 		require.Equal(t, http.StatusUnauthorized, status)
 	})
 }

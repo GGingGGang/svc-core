@@ -24,9 +24,16 @@ DB_USER=             # required
 DB_PASSWORD=         # required, no default — never commit
 DB_NAME=             # required
 DB_TLS=true          # default true (HeatWave requires TLS); set false for local/testcontainers MySQL
+JWKS_URL=http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json  # default shown; in-cluster auth JWKS endpoint
+JWT_ISSUER=          # required, no default (environment-specific, e.g. auth.example.com)
+JWT_AUDIENCE=core    # default core, matches the fixed contract value
+OTEL_TRACES_EXPORTER=none  # default none if unset; set otlp once a collector exists
 ```
 
-Auth (temporary): every `/schedules*` request requires an `X-User-Id: <uuid>` header — cluster-internal placeholder until it is replaced by JWKS-based JWT validation.
+Auth: every `/schedules*` request requires `Authorization: Bearer <access-token>` — a JWT (ES256) issued by the auth
+service, verified locally against its JWKS (in-memory cache, lazy refresh on an unknown `kid`). `iss` and `aud` are
+checked against `JWT_ISSUER`/`JWT_AUDIENCE`. The authenticated user id always comes from the token's `sub` claim —
+never from a request body or path parameter. Requests without a valid token get 401.
 
 ## Database
 
@@ -43,7 +50,8 @@ sqlc generate
 go mod download
 docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=core mysql:8
 migrate -path db/migrations -database "mysql://root:root@tcp(localhost:3306)/core" up
-DB_HOST=127.0.0.1 DB_USER=root DB_PASSWORD=root DB_NAME=core DB_TLS=false go run ./cmd/server
+DB_HOST=127.0.0.1 DB_USER=root DB_PASSWORD=root DB_NAME=core DB_TLS=false \
+  JWT_ISSUER=http://auth.auth.svc.cluster.local:3000 go run ./cmd/server
 go test ./...
 ```
 
@@ -53,8 +61,11 @@ go test ./...
 
 `internal/api/integration_test.go` is a full HTTP-level integration test — testcontainers-go boots a real
 MySQL 8 container, applies `db/migrations/000001_init.up.sql`, and drives `/schedules` CRUD, the reminders
-sub-resource, bulk-delete, and cross-user 404 scoping through the same router/service stack `cmd/server`
-uses. It is gated behind a build tag so CI without a Docker daemon still passes `go test ./...`:
+sub-resource, bulk-delete, cross-user 404 scoping, and JWT authentication (valid token → 200, missing/malformed/
+expired/wrong-key/wrong-issuer/wrong-audience → 401) through the same router/service stack `cmd/server` uses.
+The auth service is not required to be running: the test generates its own ES256 key pair, serves it as a JWKS
+from a local `httptest` server, and mints tokens signed against that key. It is gated behind a build tag so CI
+without a Docker daemon still passes `go test ./...`:
 
 ```bash
 go test -tags=integration ./...
@@ -98,5 +109,4 @@ curl http://localhost:8080/openapi.yaml
 ```
 
 Paste that output into any OpenAPI viewer (Swagger Editor, Redocly, etc.) to browse it interactively —
-this service does not bundle a UI. The `X-User-Id` header auth documented there is the interim scheme
-described above; the spec notes it will be replaced by JWT bearer auth once that lands.
+this service does not bundle a UI. The bearer JWT auth documented there matches the scheme described above.

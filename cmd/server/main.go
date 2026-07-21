@@ -11,6 +11,7 @@ import (
 	"github.com/GGingGGang/svc-core/internal/api"
 	"github.com/GGingGGang/svc-core/internal/config"
 	"github.com/GGingGGang/svc-core/internal/db"
+	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 	"github.com/GGingGGang/svc-core/internal/service"
 )
 
@@ -31,11 +32,16 @@ func main() {
 	}
 	defer sqlDB.Close()
 
+	jwtAuth, err := authmw.NewJWTAuth(cfg.JWKSURL, cfg.JWTIssuer, cfg.JWTAudience)
+	if err != nil {
+		log.Fatalf("setup jwt auth: %v", err)
+	}
+
 	handler := api.NewHandler(service.New(sqlDB))
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
-		Handler: api.Router(handler),
+		Handler: api.Router(handler, jwtAuth.Middleware),
 	}
 
 	log.Printf("svc-core %s listening on :%s", version, cfg.HTTPPort)

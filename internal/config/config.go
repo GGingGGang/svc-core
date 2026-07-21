@@ -20,6 +20,16 @@ type Config struct {
 	// verification fails). The flag exists so local/testcontainers MySQL
 	// (no TLS listener) can still be exercised.
 	DBTLS bool `env:"DB_TLS" envDefault:"true"`
+
+	// JWKSURL, JWTIssuer, and JWTAudience configure JWT verification
+	// (../PLAN.md §4.3). JWKSURL defaults to the in-cluster auth DNS name
+	// (../PLAN.md §3 / ./PLAN.md §9); JWTAudience defaults to the fixed
+	// contract value from ../PLAN.md §4.1. JWTIssuer has no default because
+	// it is environment-specific (`auth.${DOMAIN}`) and must be set
+	// explicitly per deployment.
+	JWKSURL     string `env:"JWKS_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json"`
+	JWTIssuer   string `env:"JWT_ISSUER,required"`
+	JWTAudience string `env:"JWT_AUDIENCE" envDefault:"core"`
 }
 
 func Load() (Config, error) {

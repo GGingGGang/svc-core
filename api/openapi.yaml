@@ -4,8 +4,8 @@ info:
   description: >-
     Schedule domain API: schedule CRUD, reminders, and bulk-delete. Documents
     only the endpoints that are actually implemented and reachable in this
-    build; endpoints planned for later work (AI text extraction, JWT/JWKS
-    verification) are intentionally omitted until they exist.
+    build; endpoints planned for later work (AI text extraction) are
+    intentionally omitted until they exist.
   version: "1.0.0"
 servers:
   - url: http://core.core.svc.cluster.local:8080
@@ -22,7 +22,7 @@ tags:
     description: Reminder sub-resource of a schedule
 
 security:
-  - TempUserIdAuth: []
+  - BearerAuth: []
 
 paths:
   /healthz:
@@ -339,17 +339,16 @@ paths:
 
 components:
   securitySchemes:
-    TempUserIdAuth:
-      type: apiKey
-      in: header
-      name: X-User-Id
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
       description: >-
-        Interim authentication: the caller's UUID is trusted as-is from this
-        header, with no signature verification. This is only safe because the
-        service is not exposed outside the cluster while it is in use. It
-        will be replaced by JWT bearer authentication (Authorization: Bearer
-        <access>, verified locally against the issuer's published JWKS), at
-        which point this header stops being accepted.
+        Authorization: Bearer <access-token>. The token is a JWT (ES256)
+        issued by the auth service and verified locally against its published
+        JWKS (../PLAN.md §4 — no introspection call). The authenticated
+        user id always comes from the token's `sub` claim; it is never
+        accepted from a request body or path parameter.
 
   parameters:
     ScheduleId:
@@ -368,7 +367,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Unauthorized:
-      description: missing or invalid X-User-Id
+      description: missing, malformed, expired, or otherwise invalid bearer JWT
       content:
         application/json:
           schema:

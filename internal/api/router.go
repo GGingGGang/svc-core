@@ -6,11 +6,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 )
 
-func Router(h *Handler) http.Handler {
+// Router builds the HTTP handler tree. authMiddleware guards every
+// /schedules* route (JWKS-verified bearer JWT in production —
+// internal/middleware.JWTAuth.Middleware — or a test double in tests); it is
+// injected rather than hardcoded so tests can point auth at a local JWKS
+// fixture without touching this file.
+func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Get("/healthz", healthz)
@@ -19,7 +22,7 @@ func Router(h *Handler) http.Handler {
 	r.Get("/openapi.yaml", serveOpenAPISpec)
 
 	r.Route("/schedules", func(r chi.Router) {
-		r.Use(authmw.TempUserID)
+		r.Use(authMiddleware)
 
 		r.Post("/", h.CreateSchedule)
 		r.Get("/", h.ListSchedules)

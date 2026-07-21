@@ -8,10 +8,13 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/GGingGGang/svc-core/internal/api"
 	"github.com/GGingGGang/svc-core/internal/config"
 	"github.com/GGingGGang/svc-core/internal/db"
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
+	"github.com/GGingGGang/svc-core/internal/observability"
 	"github.com/GGingGGang/svc-core/internal/service"
 )
 
@@ -25,6 +28,18 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	shutdownTracing, err := observability.SetupTracing(ctx)
+	if err != nil {
+		log.Fatalf("setup tracing: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Printf("tracing shutdown failed: %v", err)
+		}
+	}()
 
 	sqlDB, err := db.Connect(ctx, cfg)
 	if err != nil {
@@ -41,7 +56,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
-		Handler: api.Router(handler, jwtAuth.Middleware),
+		Handler: otelhttp.NewHandler(api.Router(handler, jwtAuth.Middleware), "svc-core"),
 	}
 
 	log.Printf("svc-core %s listening on :%s", version, cfg.HTTPPort)

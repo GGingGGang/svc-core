@@ -1,3 +1,5 @@
+> 이 애플리케이션 레포지토리는 AI 코드 에이전트가 구현했습니다.
+
 # svc-core
 
 Go 1.23 / chi — schedule domain API + AI (Gemini) text extraction.

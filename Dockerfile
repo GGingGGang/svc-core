@@ -1,4 +1,4 @@
-FROM docker.io/golang:1.23-alpine AS builder
+FROM docker.io/golang:1.25-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

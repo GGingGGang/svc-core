@@ -2,7 +2,11 @@
 
 # svc-core
 
-Go 1.23 / chi — schedule domain API + AI (Gemini) text extraction.
+Go 1.25 / chi — schedule domain API + AI (Gemini) text extraction.
+
+(Toolchain bumped from 1.23 to 1.25: the testcontainers-go integration-test
+dependency's own go.mod requires it. Application code has no 1.24+/1.25+
+language-feature dependency — the bump only affects the build image.)
 
 ## Ports
 
@@ -42,6 +46,21 @@ migrate -path db/migrations -database "mysql://root:root@tcp(localhost:3306)/cor
 DB_HOST=127.0.0.1 DB_USER=root DB_PASSWORD=root DB_NAME=core DB_TLS=false go run ./cmd/server
 go test ./...
 ```
+
+## Testing
+
+`go test ./...` runs unit-level checks only (no `_test.go` files require external services yet).
+
+`internal/api/integration_test.go` is a full HTTP-level integration test — testcontainers-go boots a real
+MySQL 8 container, applies `db/migrations/000001_init.up.sql`, and drives `/schedules` CRUD, the reminders
+sub-resource, bulk-delete, and cross-user 404 scoping through the same router/service stack `cmd/server`
+uses. It is gated behind a build tag so CI without a Docker daemon still passes `go test ./...`:
+
+```bash
+go test -tags=integration ./...
+```
+
+Requires a running Docker daemon (Docker Desktop or equivalent) reachable from the test process.
 
 ## Build
 

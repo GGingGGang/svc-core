@@ -1,0 +1,548 @@
+openapi: 3.0.3
+info:
+  title: svc-core Schedules API
+  description: >-
+    Schedule domain API: schedule CRUD, reminders, and bulk-delete. Documents
+    only the endpoints that are actually implemented and reachable in this
+    build; endpoints planned for later work (AI text extraction, JWT/JWKS
+    verification) are intentionally omitted until they exist.
+  version: "1.0.0"
+servers:
+  - url: http://core.core.svc.cluster.local:8080
+    description: in-cluster service DNS
+  - url: http://localhost:8080
+    description: local development
+
+tags:
+  - name: Health
+    description: Liveness / readiness / metrics probes
+  - name: Schedules
+    description: Schedule CRUD, listing, and bulk-delete
+  - name: Reminders
+    description: Reminder sub-resource of a schedule
+
+security:
+  - TempUserIdAuth: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      security: []
+      responses:
+        "200":
+          description: process is ready to receive traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus exposition endpoint
+      security: []
+      responses:
+        "200":
+          description: metrics in the Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /openapi.yaml:
+    get:
+      tags: [Health]
+      summary: This OpenAPI document
+      security: []
+      responses:
+        "200":
+          description: the OpenAPI 3.0 spec, served as-is
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /schedules:
+    post:
+      tags: [Schedules]
+      summary: Create a schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScheduleRequest"
+      responses:
+        "201":
+          description: schedule created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      tags: [Schedules]
+      summary: List schedules in a time range
+      description: >-
+        Returns schedules with start_at in [from, to). Omitting from/to
+        defaults to the widest range the start_at column can hold. List rows
+        do not include their reminders (fetch a single schedule for that).
+      parameters:
+        - name: from
+          in: query
+          description: inclusive lower bound, RFC3339 UTC
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: exclusive upper bound, RFC3339 UTC
+          schema:
+            type: string
+            format: date-time
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScheduleStatus"
+      responses:
+        "200":
+          description: matching schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /schedules/bulk-delete:
+    post:
+      tags: [Schedules]
+      summary: Delete up to 100 schedules owned by the caller
+      description: >-
+        Ids that do not exist, or belong to a different user, are silently
+        excluded from the delete rather than causing an error; the response
+        reports how many rows were actually removed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: bulk delete result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /schedules/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ScheduleId"
+    get:
+      tags: [Schedules]
+      summary: Get one schedule, including its reminders
+      responses:
+        "200":
+          description: the schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      tags: [Schedules]
+      summary: Partially update a schedule
+      description: >-
+        Only the fields present in the request body are changed; omitted
+        fields keep their current value. A field set explicitly to null is
+        rejected with 400 for every field except description and location,
+        which are nullable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateScheduleRequest"
+      responses:
+        "200":
+          description: the updated schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [Schedules]
+      summary: Hard delete a schedule
+      description: Deletes the schedule (and its reminders, via cascade) immediately.
+      responses:
+        "204":
+          description: deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /schedules/{id}/reminders:
+    parameters:
+      - $ref: "#/components/parameters/ScheduleId"
+    get:
+      tags: [Reminders]
+      summary: List a schedule's reminders
+      responses:
+        "200":
+          description: reminders, ordered by minutes_before ascending
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reminders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Reminder"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Reminders]
+      summary: Add a reminder to a schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReminderRequest"
+      responses:
+        "201":
+          description: reminder created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reminder"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /schedules/{id}/reminders/{reminderId}:
+    parameters:
+      - $ref: "#/components/parameters/ScheduleId"
+      - name: reminderId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Reminders]
+      summary: Remove a reminder
+      responses:
+        "204":
+          description: deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    TempUserIdAuth:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: >-
+        Interim authentication: the caller's UUID is trusted as-is from this
+        header, with no signature verification. This is only safe because the
+        service is not exposed outside the cluster while it is in use. It
+        will be replaced by JWT bearer authentication (Authorization: Bearer
+        <access>, verified locally against the issuer's published JWKS), at
+        which point this header stops being accepted.
+
+  parameters:
+    ScheduleId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: request failed validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: missing or invalid X-User-Id
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >-
+        the resource does not exist, or belongs to a different user
+        (ownership never leaks as a distinct 403)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    ScheduleStatus:
+      type: string
+      enum: [confirmed, tentative, cancelled]
+
+    ScheduleSource:
+      type: string
+      enum: [manual, ai]
+
+    ReminderChannel:
+      type: string
+      enum: [push, email, none]
+
+    CreateReminderRequest:
+      type: object
+      required: [channel]
+      properties:
+        minutes_before:
+          type: integer
+          format: int32
+          minimum: 0
+        channel:
+          $ref: "#/components/schemas/ReminderChannel"
+
+    Reminder:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        schedule_id:
+          type: string
+          format: uuid
+        minutes_before:
+          type: integer
+          format: int32
+        channel:
+          $ref: "#/components/schemas/ReminderChannel"
+        created_at:
+          type: string
+          format: date-time
+
+    CreateScheduleRequest:
+      type: object
+      required: [title, start_at]
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          maxLength: 255
+          nullable: true
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        all_day:
+          type: boolean
+          default: false
+        status:
+          allOf:
+            - $ref: "#/components/schemas/ScheduleStatus"
+          default: confirmed
+        source:
+          allOf:
+            - $ref: "#/components/schemas/ScheduleSource"
+          default: manual
+        extraction_id:
+          type: string
+          format: uuid
+          description: links back to the ai_extractions row this schedule was confirmed from, if any
+        reminders:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreateReminderRequest"
+
+    UpdateScheduleRequest:
+      type: object
+      description: every property is optional; only present ones are applied.
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        all_day:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/ScheduleStatus"
+
+    Schedule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        all_day:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/ScheduleStatus"
+        source:
+          $ref: "#/components/schemas/ScheduleSource"
+        extraction_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        reminders:
+          type: array
+          description: present on a single-schedule GET; omitted on list rows.
+          items:
+            $ref: "#/components/schemas/Reminder"

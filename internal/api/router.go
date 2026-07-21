@@ -16,6 +16,7 @@ func Router(h *Handler) http.Handler {
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz)
 	r.Handle("/metrics", promhttp.Handler())
+	r.Get("/openapi.yaml", serveOpenAPISpec)
 
 	r.Route("/schedules", func(r chi.Router) {
 		r.Use(authmw.TempUserID)

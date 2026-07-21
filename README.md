@@ -74,6 +74,7 @@ docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t core .
 |--------|------|-------------|
 | GET | `/healthz` | Liveness probe → `{"status":"ok"}` |
 | GET | `/readyz` | Readiness probe → `{"status":"ready"}` |
+| GET | `/openapi.yaml` | OpenAPI 3.0 spec for this API (see below) |
 | POST | `/schedules` | Create a schedule (optionally with `reminders`) |
 | GET | `/schedules?from=&to=&status=` | List schedules in an RFC3339 UTC range |
 | GET | `/schedules/{id}` | Get one schedule (includes reminders) |
@@ -85,3 +86,17 @@ docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t core .
 | DELETE | `/schedules/{id}/reminders/{reminderId}` | Remove a reminder |
 
 Accessing another user's schedule (or a nonexistent one) always returns 404, never 403.
+
+## OpenAPI spec
+
+`api/openapi.yaml` is the OpenAPI 3.0 contract for every endpoint above, hand-written to match the
+implementation exactly (chi has no Fastify-swagger-style auto generator). It is embedded into the
+binary at build time (`api/openapi.go`, `go:embed`) and served as-is:
+
+```bash
+curl http://localhost:8080/openapi.yaml
+```
+
+Paste that output into any OpenAPI viewer (Swagger Editor, Redocly, etc.) to browse it interactively —
+this service does not bundle a UI. The `X-User-Id` header auth documented there is the interim scheme
+described above; the spec notes it will be replaced by JWT bearer auth once that lands.

@@ -27,6 +27,7 @@ DB_TLS=true          # default true (HeatWave requires TLS); set false for local
 JWKS_URL=http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json  # default shown; in-cluster auth JWKS endpoint
 JWT_ISSUER=          # required, no default (environment-specific, e.g. auth.example.com)
 JWT_AUDIENCE=core    # default core, matches the fixed contract value
+NATS_URL=nats://nats.data.svc.cluster.local:4222  # default shown; in-cluster JetStream broker
 OTEL_TRACES_EXPORTER=none  # default none if unset; set otlp once a collector exists
 ```
 
@@ -44,6 +45,52 @@ migrate -path db/migrations -database "mysql://$DSN" up
 sqlc generate
 ```
 
+## Schedule domain events (NATS JetStream)
+
+On startup this service connects to `NATS_URL` and declares (create-or-update, idempotent — no human
+action needed) a `APP_SCHEDULES` stream with exactly three subjects (never a wildcard, so it cannot
+collide with the DLQ stream batch owns):
+
+```
+app.schedules.created.v1
+app.schedules.updated.v1
+app.schedules.deleted.v1
+```
+
+Every schedule mutation publishes the matching event after its DB write commits, using the database's
+own clock (`SELECT UTC_TIMESTAMP(3)`, not application time) as `occurred_at`:
+
+| action | subject |
+|--------|---------|
+| `POST /schedules` | `app.schedules.created.v1` |
+| `PATCH /schedules/{id}` | `app.schedules.updated.v1` |
+| `POST /schedules/{id}/reminders`, `DELETE /schedules/{id}/reminders/{reminderId}` | `app.schedules.updated.v1` (full reminders snapshot) |
+| `DELETE /schedules/{id}` | `app.schedules.deleted.v1` |
+| `POST /schedules/bulk-delete` | `app.schedules.deleted.v1` per id actually deleted |
+
+Every publish carries `Content-Type: application/json`, a `Nats-Msg-Id: <subject>:<schedule_id>:<occurred_at>`
+header so JetStream's server-side dedup window absorbs publish retries, and a W3C `traceparent` header
+propagated from the request's trace context via the composite `TraceContext`+`Baggage` propagator.
+
+Publishing is best-effort: if NATS is unreachable (at startup or at publish time), the HTTP request still
+succeeds — the failure is logged and counted (`domain_event_publish_failed_total{subject}`), never
+surfaced as a 5xx to the caller. See `internal/events` for the publisher/stream-declaration code and
+`internal/events/*_integration_test.go` / `internal/api/events_integration_test.go` for testcontainers-go
+coverage (dedup, header shape, reminders-snapshot semantics, per-id bulk-delete correctness).
+
+## Metrics
+
+`/metrics` (same port as the API, see above) exposes, alongside the Go/process default collectors:
+
+| metric | type | labels | meaning |
+|--------|------|--------|---------|
+| `http_server_requests_total` | counter | `method`, `route`, `status` | RED — request rate / error rate |
+| `http_server_request_duration_seconds` | histogram | `method`, `route`, `status` | RED — latency |
+| `domain_event_published_total` | counter | `subject` | successful NATS publishes |
+| `domain_event_publish_failed_total` | counter | `subject` | failed NATS publish attempts |
+
+`route` is chi's matched path template (e.g. `/schedules/{id}`), never a raw path, to keep cardinality bounded.
+
 ## Local Development
 
 ```bash
@@ -57,15 +104,26 @@ go test ./...
 
 ## Testing
 
-`go test ./...` runs unit-level checks only (no `_test.go` files require external services yet).
+`go test ./...` runs unit-level checks only — no external services required. This includes
+`internal/events/publisher_test.go`, which covers the nil-JetStream (NATS unreachable) fail-fast-and-count
+path without Docker.
 
 `internal/api/integration_test.go` is a full HTTP-level integration test — testcontainers-go boots a real
 MySQL 8 container, applies `db/migrations/000001_init.up.sql`, and drives `/schedules` CRUD, the reminders
 sub-resource, bulk-delete, cross-user 404 scoping, and JWT authentication (valid token → 200, missing/malformed/
 expired/wrong-key/wrong-issuer/wrong-audience → 401) through the same router/service stack `cmd/server` uses.
 The auth service is not required to be running: the test generates its own ES256 key pair, serves it as a JWKS
-from a local `httptest` server, and mints tokens signed against that key. It is gated behind a build tag so CI
-without a Docker daemon still passes `go test ./...`:
+from a local `httptest` server, and mints tokens signed against that key.
+
+`internal/events/stream_integration_test.go` boots a real NATS server (JetStream enabled) and covers stream
+declaration (exact subjects, idempotent create-or-update) and publishing (headers, dedup, payload round-trip)
+in isolation. `internal/api/events_integration_test.go` boots MySQL *and* NATS together and drives every
+mutating `/schedules*` endpoint through the real HTTP/service stack, asserting the resulting
+`app.schedules.*.v1` events land on the stream in order with the right subject, reminders snapshot, and
+per-id bulk-delete correctness, plus that `domain_event_published_total`/`http_server_requests_total` show up
+on `/metrics`.
+
+All of the above are gated behind a build tag so CI without a Docker daemon still passes `go test ./...`:
 
 ```bash
 go test -tags=integration ./...

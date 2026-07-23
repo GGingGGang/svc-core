@@ -33,6 +33,7 @@ import (
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 
 	"github.com/GGingGGang/svc-core/internal/api"
+	"github.com/GGingGGang/svc-core/internal/events"
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 	"github.com/GGingGGang/svc-core/internal/service"
 )
@@ -129,8 +130,15 @@ func (f *jwksFixture) mintWithClaims(t *testing.T, subject, issuer string, audie
 // migration via the image's docker-entrypoint-initdb.d mechanism, and
 // returns an httptest server wired to the real DB and a JWKS-backed JWT auth
 // middleware through the same api.Router/service.Service stack
-// cmd/server/main.go uses.
+// cmd/server/main.go uses. Schedule events are not published (pub=nil) —
+// see internal/events for NATS-backed publisher coverage and
+// events_integration_test.go in this package for the full HTTP+NATS path.
 func setupServer(t *testing.T) (*httptest.Server, *jwksFixture) {
+	t.Helper()
+	return setupServerWithPublisher(t, nil)
+}
+
+func setupServerWithPublisher(t *testing.T, pub *events.Publisher) (*httptest.Server, *jwksFixture) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -160,7 +168,7 @@ func setupServer(t *testing.T) (*httptest.Server, *jwksFixture) {
 	jwtAuth, err := authmw.NewJWTAuth(jwks.url, testIssuer, testAudience)
 	require.NoError(t, err)
 
-	handler := api.NewHandler(service.New(db))
+	handler := api.NewHandler(service.New(db, pub))
 	srv := httptest.NewServer(api.Router(handler, jwtAuth.Middleware))
 	t.Cleanup(srv.Close)
 	return srv, jwks

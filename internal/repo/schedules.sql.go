@@ -168,6 +168,50 @@ func (q *Queries) DeleteSchedulesByIDs(ctx context.Context, arg DeleteSchedulesB
 	return result.RowsAffected()
 }
 
+const listScheduleIDsByIDs = `-- name: ListScheduleIDsByIDs :many
+SELECT id FROM schedules
+WHERE user_id = ? AND id IN (/*SLICE:ids*/?)
+`
+
+type ListScheduleIDsByIDsParams struct {
+	UserID []byte   `json:"user_id"`
+	Ids    [][]byte `json:"ids"`
+}
+
+func (q *Queries) ListScheduleIDsByIDs(ctx context.Context, arg ListScheduleIDsByIDsParams) ([][]byte, error) {
+	query := listScheduleIDsByIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UserID)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var id []byte
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSchedule = `-- name: GetSchedule :one
 SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at FROM schedules
 WHERE id = ? AND user_id = ?

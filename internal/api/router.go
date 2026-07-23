@@ -6,6 +6,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/GGingGGang/svc-core/internal/observability"
 )
 
 // Router builds the HTTP handler tree. authMiddleware guards every
@@ -16,6 +18,7 @@ import (
 func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	r.Use(observability.HTTPMetrics)
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz)
 	r.Handle("/metrics", promhttp.Handler())

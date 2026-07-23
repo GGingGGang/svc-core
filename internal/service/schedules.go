@@ -66,8 +66,14 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	occurredAt := s.occurredAt(ctx)
 
-	return s.GetSchedule(ctx, userID, id)
+	sch, err := s.GetSchedule(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	s.publishCreated(ctx, sch, occurredAt)
+	return sch, nil
 }
 
 func (s *Service) GetSchedule(ctx context.Context, userID, id uuid.UUID) (*Schedule, error) {
@@ -138,8 +144,14 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fiel
 	}); err != nil {
 		return nil, err
 	}
+	occurredAt := s.occurredAt(ctx)
 
-	return s.GetSchedule(ctx, userID, id)
+	sch, err := s.GetSchedule(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	s.publishUpdated(ctx, sch, occurredAt)
+	return sch, nil
 }
 
 func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID) error {
@@ -150,17 +162,40 @@ func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID) erro
 	if n == 0 {
 		return ErrNotFound
 	}
+	s.publishDeleted(ctx, id.String(), userID.String(), s.occurredAt(ctx))
 	return nil
 }
 
 // BulkDeleteSchedules deletes only the ids owned by userID and reports how
 // many rows were actually removed; ids belonging to another user (or
 // nonexistent) are silently excluded from the count rather than erroring,
-// matching the hard-delete/idempotent nature of the endpoint.
+// matching the hard-delete/idempotent nature of the endpoint. A
+// schedules.deleted.v1 event is published per id actually removed — the
+// caller-supplied id list may include ids that never belonged to this user,
+// which must not be reported as deleted.
 func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) (int64, error) {
 	idList := make([][]byte, len(ids))
 	for i, id := range ids {
 		idList[i] = idBytes(id)
 	}
-	return s.q.DeleteSchedulesByIDs(ctx, repo.DeleteSchedulesByIDsParams{UserID: idBytes(userID), Ids: idList})
+
+	owned, err := s.q.ListScheduleIDsByIDs(ctx, repo.ListScheduleIDsByIDsParams{UserID: idBytes(userID), Ids: idList})
+	if err != nil {
+		return 0, err
+	}
+
+	n, err := s.q.DeleteSchedulesByIDs(ctx, repo.DeleteSchedulesByIDsParams{UserID: idBytes(userID), Ids: idList})
+	if err != nil {
+		return 0, err
+	}
+
+	occurredAt := s.occurredAt(ctx)
+	for _, raw := range owned {
+		id, err := toUUID(raw)
+		if err != nil {
+			continue
+		}
+		s.publishDeleted(ctx, id.String(), userID.String(), occurredAt)
+	}
+	return n, nil
 }

@@ -108,6 +108,18 @@ func mapSchedule(row *repo.Schedule, reminders []*repo.ScheduleReminder) (*Sched
 	return sch, nil
 }
 
+func mapReminders(rows []*repo.ScheduleReminder) ([]Reminder, error) {
+	out := make([]Reminder, 0, len(rows))
+	for _, row := range rows {
+		rem, err := mapReminder(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *rem)
+	}
+	return out, nil
+}
+
 func mapReminder(row *repo.ScheduleReminder) (*Reminder, error) {
 	id, err := toUUID(row.ID)
 	if err != nil {

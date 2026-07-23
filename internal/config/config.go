@@ -30,6 +30,11 @@ type Config struct {
 	JWKSURL     string `env:"JWKS_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json"`
 	JWTIssuer   string `env:"JWT_ISSUER,required"`
 	JWTAudience string `env:"JWT_AUDIENCE" envDefault:"core"`
+
+	// NATSURL is the JetStream broker this service publishes schedule
+	// domain events to (../PLAN.md §3/§7). Defaults to the in-cluster DNS
+	// name; never hardcode a different value per-environment.
+	NATSURL string `env:"NATS_URL" envDefault:"nats://nats.data.svc.cluster.local:4222"`
 }
 
 func Load() (Config, error) {

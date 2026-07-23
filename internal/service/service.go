@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/GGingGGang/svc-core/internal/events"
 	"github.com/GGingGGang/svc-core/internal/repo"
 )
 
@@ -16,10 +17,16 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type Service struct {
-	q  *repo.Queries
-	db *sql.DB
+	q   *repo.Queries
+	db  *sql.DB
+	pub *events.Publisher
 }
 
-func New(db *sql.DB) *Service {
-	return &Service{q: repo.New(db), db: db}
+// New wires the service against db and, if pub is non-nil, publishes a
+// schedules.*.v1 event (../../PLAN.md §7) after every commit that creates,
+// updates, or deletes a schedule. pub may be nil (e.g. NATS unreachable at
+// startup) — publishing is then simply skipped rather than failing the
+// request, matching the best-effort contract in ./PLAN.md §7.
+func New(db *sql.DB, pub *events.Publisher) *Service {
+	return &Service{q: repo.New(db), db: db, pub: pub}
 }

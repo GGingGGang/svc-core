@@ -34,6 +34,10 @@ WHERE id = ? AND user_id = ?;
 DELETE FROM schedules
 WHERE user_id = ? AND id IN (sqlc.slice('ids'));
 
+-- name: ListScheduleIDsByIDs :many
+SELECT id FROM schedules
+WHERE user_id = ? AND id IN (sqlc.slice('ids'));
+
 -- name: AddReminder :exec
 INSERT INTO schedule_reminders (id, schedule_id, minutes_before, channel)
 VALUES (?, ?, ?, ?);

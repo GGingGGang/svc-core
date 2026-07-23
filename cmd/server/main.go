@@ -13,6 +13,7 @@ import (
 	"github.com/GGingGGang/svc-core/internal/api"
 	"github.com/GGingGGang/svc-core/internal/config"
 	"github.com/GGingGGang/svc-core/internal/db"
+	"github.com/GGingGGang/svc-core/internal/events"
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 	"github.com/GGingGGang/svc-core/internal/observability"
 	"github.com/GGingGGang/svc-core/internal/service"
@@ -52,7 +53,9 @@ func main() {
 		log.Fatalf("setup jwt auth: %v", err)
 	}
 
-	handler := api.NewHandler(service.New(sqlDB))
+	publisher := setupEventPublisher(ctx, cfg.NATSURL)
+
+	handler := api.NewHandler(service.New(sqlDB, publisher))
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
@@ -80,4 +83,31 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
+}
+
+// setupEventPublisher connects to NATS and declares the APP_SCHEDULES
+// stream (../PLAN.md §7.2, create-or-update — no human action needed). A
+// connection failure here is logged, not fatal: schedule event publishing
+// is best-effort (../PLAN.md §7), so this service still serves /schedules*
+// while NATS is unreachable, and every publish attempt in that window fails
+// fast and is counted by domain_event_publish_failed_total.
+func setupEventPublisher(ctx context.Context, natsURL string) *events.Publisher {
+	nc, js, err := events.Connect(natsURL)
+	if err != nil {
+		log.Printf("nats connect failed, schedule events will not publish until reachable: %v", err)
+		return events.NewPublisher(nil)
+	}
+
+	streamCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := events.EnsureStream(streamCtx, js); err != nil {
+		log.Printf("ensure %s stream failed: %v", events.StreamName, err)
+	}
+
+	go func() {
+		<-ctx.Done()
+		nc.Close()
+	}()
+
+	return events.NewPublisher(js)
 }

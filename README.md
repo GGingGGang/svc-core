@@ -131,6 +131,12 @@ go test -tags=integration ./...
 
 Requires a running Docker daemon (Docker Desktop or equivalent) reachable from the test process.
 
+### CI
+
+`.github/workflows/test.yml` runs the full suite (`go test -tags=integration ./...`) on every push to `main`
+and every PR, on `ubuntu-latest` (Docker preinstalled, no extra setup). Jenkins runs the unit-only gate
+(`go test ./...`, no Docker) ahead of image build; see `../test-contract.md` for the full contract.
+
 ## Build
 
 ```bash

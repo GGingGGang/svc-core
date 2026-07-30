@@ -1,0 +1,175 @@
+//go:build integration
+
+// POST /schedules/extract end to end against a real MySQL container: a
+// happy-path call must return candidates and persist an ai_extractions
+// audit row, oversized input must never reach Gemini, and a Gemini upstream
+// stuck on 429 must surface as 429 + Retry-After to the caller with its own
+// audit row recorded (../../PLAN.md §6, ./PLAN.md §8 4M DoD). Gemini itself
+// is never called for real — a local httptest server stands in, matching
+// the shape internal/ai/gemini_test.go already exercises at the unit level.
+package api_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
+	"github.com/GGingGGang/svc-core/internal/ai"
+)
+
+func newGeminiStub(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func geminiSuccessBody(t *testing.T, title string) []byte {
+	t.Helper()
+	inner := map[string]any{
+		"candidates": []map[string]any{
+			{
+				"title":       title,
+				"start_at":    "2026-07-07T06:00:00Z",
+				"end_at":      nil,
+				"all_day":     false,
+				"location":    "강남역",
+				"description": "",
+				"confidence":  0.9,
+			},
+		},
+	}
+	innerJSON, err := json.Marshal(inner)
+	require.NoError(t, err)
+
+	envelope := map[string]any{
+		"candidates": []map[string]any{
+			{
+				"content":      map[string]any{"parts": []map[string]any{{"text": string(innerJSON)}}},
+				"finishReason": "STOP",
+			},
+		},
+	}
+	body, err := json.Marshal(envelope)
+	require.NoError(t, err)
+	return body
+}
+
+func TestExtractIntegration(t *testing.T) {
+	var geminiCalls int32
+	gemini := newGeminiStub(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&geminiCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(geminiSuccessBody(t, "통합테스트 회의"))
+	})
+	aiClnt := ai.New(gemini.URL, "gemini-test", "server-key")
+
+	srv, jwks, db := setupServerWithPublisher(t, nil, aiClnt)
+	client := srv.Client()
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+
+	t.Run("happy path returns candidates and records a success audit row", func(t *testing.T) {
+		status, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+			"text":     "회의 다음주 화요일 오후 3시 강남역",
+			"now":      "2026-06-28T00:00:00Z",
+			"timezone": "Asia/Seoul",
+		})
+		require.Equal(t, http.StatusOK, status, string(body))
+
+		var resp struct {
+			Candidates []struct {
+				Title      string  `json:"title"`
+				Confidence float64 `json:"confidence"`
+			} `json:"candidates"`
+		}
+		require.NoError(t, json.Unmarshal(body, &resp))
+		require.Len(t, resp.Candidates, 1)
+		require.Equal(t, "통합테스트 회의", resp.Candidates[0].Title)
+		require.InDelta(t, 0.9, resp.Candidates[0].Confidence, 0.0001)
+
+		require.Eventually(t, func() bool {
+			var count int
+			if err := db.QueryRow("SELECT COUNT(*) FROM ai_extractions WHERE status = 'success'").Scan(&count); err != nil {
+				return false
+			}
+			return count == 1
+		}, 5*time.Second, 100*time.Millisecond, "a success ai_extractions row should be recorded")
+	})
+
+	t.Run("text over 4000 chars is rejected before calling gemini", func(t *testing.T) {
+		before := atomic.LoadInt32(&geminiCalls)
+		status, _ := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+			"text":     strings.Repeat("a", 4001),
+			"now":      "2026-06-28T00:00:00Z",
+			"timezone": "UTC",
+		})
+		require.Equal(t, http.StatusRequestEntityTooLarge, status)
+		require.Equal(t, before, atomic.LoadInt32(&geminiCalls), "oversized text must never reach gemini")
+	})
+
+	t.Run("invalid timezone is rejected", func(t *testing.T) {
+		status, _ := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+			"text":     "회의",
+			"now":      "2026-06-28T00:00:00Z",
+			"timezone": "Not/AZone",
+		})
+		require.Equal(t, http.StatusBadRequest, status)
+	})
+
+	t.Run("missing bearer token is unauthorized", func(t *testing.T) {
+		status, _ := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", "", map[string]any{
+			"text": "회의", "now": "2026-06-28T00:00:00Z", "timezone": "UTC",
+		})
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+}
+
+// TestExtractIntegration_RateLimited uses its own server + stub (an
+// always-429 Gemini) so it doesn't share the happy-path server's audit-row
+// count above.
+func TestExtractIntegration_RateLimited(t *testing.T) {
+	gemini := newGeminiStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "12")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	aiClnt := ai.New(gemini.URL, "gemini-test", "server-key")
+
+	srv, jwks, db := setupServerWithPublisher(t, nil, aiClnt)
+	client := srv.Client()
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+
+	reqBody, err := json.Marshal(map[string]any{
+		"text":     "회의",
+		"now":      "2026-06-28T00:00:00Z",
+		"timezone": "UTC",
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules/extract", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	require.Equal(t, "12", resp.Header.Get("Retry-After"))
+
+	require.Eventually(t, func() bool {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM ai_extractions WHERE status = 'failed'").Scan(&count); err != nil {
+			return false
+		}
+		return count == 1
+	}, 5*time.Second, 100*time.Millisecond, "a failed extraction must still be recorded")
+}

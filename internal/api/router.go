@@ -29,6 +29,7 @@ func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Han
 
 		r.Post("/", h.CreateSchedule)
 		r.Get("/", h.ListSchedules)
+		r.Post("/extract", h.ExtractSchedules)
 		r.Post("/bulk-delete", h.BulkDeleteSchedules)
 
 		r.Route("/{id}", func(r chi.Router) {

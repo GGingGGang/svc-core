@@ -29,6 +29,10 @@ JWT_ISSUER=          # required, no default (environment-specific, e.g. auth.exa
 JWT_AUDIENCE=core    # default core, matches the fixed contract value
 NATS_URL=nats://nats.data.svc.cluster.local:4222  # default shown; in-cluster JetStream broker
 OTEL_TRACES_EXPORTER=none  # default none if unset; set otlp once a collector exists
+
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com  # default shown
+GEMINI_MODEL=gemini-2.0-flash                               # default shown
+GEMINI_API_KEY=      # optional — fallback used only when a request omits the X-Gemini-Key BYOK header; never commit
 ```
 
 Auth: every `/schedules*` request requires `Authorization: Bearer <access-token>` — a JWT (ES256) issued by the auth
@@ -123,6 +127,17 @@ mutating `/schedules*` endpoint through the real HTTP/service stack, asserting t
 per-id bulk-delete correctness, plus that `domain_event_published_total`/`http_server_requests_total` show up
 on `/metrics`.
 
+`internal/ai/gemini_test.go` is a DB-free unit suite covering the Gemini client in isolation against a local
+`httptest` stub: BYOK header takes priority over the server fallback key, no key at all fails fast without an
+HTTP call, a 429/5xx is retried exactly once and then either succeeds or turns into `RateLimitedError` carrying
+the upstream's `Retry-After`, and a non-retryable status (e.g. 400) fails immediately without a retry.
+
+`internal/api/extract_integration_test.go` boots a real MySQL container and drives `POST /schedules/extract`
+through the full HTTP/service stack against a local Gemini stub (never the real API): a happy-path call returns
+candidates and persists a `success` `ai_extractions` row, text over 4000 chars is rejected with `413` before the
+stub is ever called, an invalid `timezone` is `400`, and a stub stuck on `429` surfaces as `429` +
+`Retry-After` to the caller with a `failed` audit row recorded.
+
 All of the above are gated behind a build tag so CI without a Docker daemon still passes `go test ./...`:
 
 ```bash
@@ -159,8 +174,27 @@ docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t core .
 | GET | `/schedules/{id}/reminders` | List reminders |
 | POST | `/schedules/{id}/reminders` | Add a reminder |
 | DELETE | `/schedules/{id}/reminders/{reminderId}` | Remove a reminder |
+| POST | `/schedules/extract` | `{text, now, timezone}` → Gemini extraction → `{candidates:[...]}` (not persisted) |
 
 Accessing another user's schedule (or a nonexistent one) always returns 404, never 403.
+
+## Gemini text extraction
+
+`POST /schedules/extract` (`internal/ai`) turns free-form text into schedule candidates without persisting anything — the client confirms a candidate by
+POSTing it to `/schedules` with `source=ai` separately.
+
+- **Key priority**: request header `X-Gemini-Key` (BYOK) → server env `GEMINI_API_KEY` fallback. Neither present → `502`. The key is never logged, put in
+  a metric label, or stored.
+- **Structured output**: the Gemini request sets `responseSchema` so the model's JSON output matches the `candidates` shape directly — no separate
+  parsing/mapping step for the happy path.
+- **Limits**: `text` over 4000 chars → `413` before any Gemini call. Each Gemini HTTP attempt has a 10s timeout. A `429`/5xx response is retried exactly
+  once after a fixed backoff; if the retry also fails, the caller gets `429` with a `Retry-After` header (taken from Gemini's own `Retry-After` when
+  present, otherwise a fixed default).
+- **Audit trail**: every call — success, or failure for any reason (missing key, upstream error, malformed response) — writes exactly one `ai_extractions`
+  row (`status` success/partial/failed, `latency_ms`, `raw_text`). The insert itself is best-effort: a DB error there is logged, not surfaced, since the
+  caller's actual request already ran to completion by that point.
+- **Timezone**: `now`/`timezone` let the model convert relative expressions ("다음주 화요일") into absolute UTC timestamps. `timezone` is validated with
+  Go's `time.LoadLocation` — the binary embeds the IANA zoneinfo database (`time/tzdata`) since the distroless runtime image ships none.
 
 ## OpenAPI spec
 

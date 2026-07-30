@@ -35,6 +35,15 @@ type Config struct {
 	// domain events to (../PLAN.md §3/§7). Defaults to the in-cluster DNS
 	// name; never hardcode a different value per-environment.
 	NATSURL string `env:"NATS_URL" envDefault:"nats://nats.data.svc.cluster.local:4222"`
+
+	// Gemini* configure the /schedules/extract text extraction call
+	// (./PLAN.md §6). GeminiAPIKey is the server-side fallback used only
+	// when a request omits the X-Gemini-Key BYOK header — it has no
+	// default because an empty value is a valid ("not configured") state,
+	// not a startup error.
+	GeminiBaseURL string `env:"GEMINI_BASE_URL" envDefault:"https://generativelanguage.googleapis.com"`
+	GeminiModel   string `env:"GEMINI_MODEL" envDefault:"gemini-2.0-flash"`
+	GeminiAPIKey  string `env:"GEMINI_API_KEY"`
 }
 
 func Load() (Config, error) {

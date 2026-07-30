@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 
+	"github.com/GGingGGang/svc-core/internal/ai"
 	"github.com/GGingGGang/svc-core/internal/api"
 	"github.com/GGingGGang/svc-core/internal/events"
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
@@ -135,10 +136,18 @@ func (f *jwksFixture) mintWithClaims(t *testing.T, subject, issuer string, audie
 // events_integration_test.go in this package for the full HTTP+NATS path.
 func setupServer(t *testing.T) (*httptest.Server, *jwksFixture) {
 	t.Helper()
-	return setupServerWithPublisher(t, nil)
+	srv, jwks, _ := setupServerWithPublisher(t, nil, nil)
+	return srv, jwks
 }
 
-func setupServerWithPublisher(t *testing.T, pub *events.Publisher) (*httptest.Server, *jwksFixture) {
+// setupServerWithPublisher wires the same api.Router/service.Service stack
+// cmd/server/main.go uses, and also returns the underlying *sql.DB so tests
+// can assert on rows a handler wrote as a side effect (e.g. ai_extractions —
+// see extract_integration_test.go). aiClnt may be nil — schedule CRUD tests
+// never call /schedules/extract, so a nil *ai.Client (never dereferenced) is
+// fine; extract_integration_test.go passes a real one pointed at a local
+// Gemini stub.
+func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Client) (*httptest.Server, *jwksFixture, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -168,10 +177,10 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher) (*httptest.Se
 	jwtAuth, err := authmw.NewJWTAuth(jwks.url, testIssuer, testAudience)
 	require.NoError(t, err)
 
-	handler := api.NewHandler(service.New(db, pub))
+	handler := api.NewHandler(service.New(db, pub, aiClnt))
 	srv := httptest.NewServer(api.Router(handler, jwtAuth.Middleware))
 	t.Cleanup(srv.Close)
-	return srv, jwks
+	return srv, jwks, db
 }
 
 func doRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {

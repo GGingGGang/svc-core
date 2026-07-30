@@ -7,9 +7,11 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embed IANA zoneinfo — the distroless runtime image ships none, but /schedules/extract validates request timezones via time.LoadLocation
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/GGingGGang/svc-core/internal/ai"
 	"github.com/GGingGGang/svc-core/internal/api"
 	"github.com/GGingGGang/svc-core/internal/config"
 	"github.com/GGingGGang/svc-core/internal/db"
@@ -54,8 +56,9 @@ func main() {
 	}
 
 	publisher := setupEventPublisher(ctx, cfg.NATSURL)
+	aiClient := ai.New(cfg.GeminiBaseURL, cfg.GeminiModel, cfg.GeminiAPIKey)
 
-	handler := api.NewHandler(service.New(sqlDB, publisher))
+	handler := api.NewHandler(service.New(sqlDB, publisher, aiClient))
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,

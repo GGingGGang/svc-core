@@ -2,10 +2,9 @@ openapi: 3.0.3
 info:
   title: svc-core Schedules API
   description: >-
-    Schedule domain API: schedule CRUD, reminders, and bulk-delete. Documents
-    only the endpoints that are actually implemented and reachable in this
-    build; endpoints planned for later work (AI text extraction) are
-    intentionally omitted until they exist.
+    Schedule domain API: schedule CRUD, reminders, bulk-delete, and Gemini
+    text extraction. Documents only the endpoints that are actually
+    implemented and reachable in this build.
   version: "1.0.0"
 servers:
   - url: http://core.core.svc.cluster.local:8080
@@ -84,6 +83,84 @@ paths:
             application/yaml:
               schema:
                 type: string
+
+  /schedules/extract:
+    post:
+      tags: [Schedules]
+      summary: Extract schedule candidates from free-form text via Gemini
+      description: >-
+        Synchronously calls Gemini to turn free-form text into schedule
+        candidates; nothing is persisted as a schedule (client must POST
+        /schedules with source=ai to confirm one). now/timezone let the
+        model convert relative expressions ("다음주 화요일") into absolute
+        UTC timestamps. An X-Gemini-Key header (BYOK) is used if present;
+        otherwise the server's own Gemini key is used as a fallback. Every
+        call — success or failure — is recorded as an ai_extractions audit
+        row.
+      parameters:
+        - name: X-Gemini-Key
+          in: header
+          required: false
+          description: caller-supplied Gemini API key (BYOK); omit to use the server's fallback key
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, now, timezone]
+              properties:
+                text:
+                  type: string
+                  maxLength: 4000
+                now:
+                  type: string
+                  format: date-time
+                  description: caller's current time, RFC3339 UTC
+                timezone:
+                  type: string
+                  description: IANA timezone name, e.g. Asia/Seoul
+      responses:
+        "200":
+          description: extracted candidates (not persisted)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidates:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ExtractCandidate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: text exceeds the 4000 character limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Gemini upstream is rate limited even after one retry; Retry-After header is set
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: seconds to wait before retrying
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Gemini call failed (no key configured, upstream error, or malformed response)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /schedules:
     post:
@@ -500,6 +577,29 @@ components:
           type: boolean
         status:
           $ref: "#/components/schemas/ScheduleStatus"
+
+    ExtractCandidate:
+      type: object
+      properties:
+        title:
+          type: string
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        all_day:
+          type: boolean
+        location:
+          type: string
+          nullable: true
+        description:
+          type: string
+        confidence:
+          type: number
+          description: model's 0-1 confidence estimate for this candidate
 
     Schedule:
       type: object

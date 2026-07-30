@@ -40,7 +40,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	require.NoError(t, events.EnsureStream(ctx, js))
 
 	pub := events.NewPublisher(js)
-	srv, jwks := setupServerWithPublisher(t, pub)
+	srv, jwks, _ := setupServerWithPublisher(t, pub, nil)
 	client := srv.Client()
 
 	userID := uuid.New().String()

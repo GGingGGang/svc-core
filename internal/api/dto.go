@@ -99,6 +99,42 @@ func toScheduleResponse(s *service.Schedule) scheduleResponse {
 	return resp
 }
 
+type extractRequest struct {
+	Text     string    `json:"text" validate:"required"`
+	Now      time.Time `json:"now" validate:"required"`
+	Timezone string    `json:"timezone" validate:"required"`
+}
+
+type extractCandidateResponse struct {
+	Title       string     `json:"title"`
+	StartAt     time.Time  `json:"start_at"`
+	EndAt       *time.Time `json:"end_at"`
+	AllDay      bool       `json:"all_day"`
+	Location    *string    `json:"location"`
+	Description string     `json:"description"`
+	Confidence  float64    `json:"confidence"`
+}
+
+type extractResponse struct {
+	Candidates []extractCandidateResponse `json:"candidates"`
+}
+
+func toExtractResponse(candidates []service.ExtractCandidate) extractResponse {
+	resp := extractResponse{Candidates: make([]extractCandidateResponse, 0, len(candidates))}
+	for _, c := range candidates {
+		resp.Candidates = append(resp.Candidates, extractCandidateResponse{
+			Title:       c.Title,
+			StartAt:     c.StartAt,
+			EndAt:       c.EndAt,
+			AllDay:      c.AllDay,
+			Location:    c.Location,
+			Description: c.Description,
+			Confidence:  c.Confidence,
+		})
+	}
+	return resp
+}
+
 func utcPtr(t *time.Time) *time.Time {
 	if t == nil {
 		return nil

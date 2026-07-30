@@ -4,6 +4,9 @@
 
 Go 1.25 / chi — schedule domain API + AI (Gemini) text extraction.
 
+Full cross-service E2E scenario (paste text → extract → confirm → event → batch reminder sent/skipped) is a
+manual runbook, not an automated test — see [`E2E.md`](./E2E.md).
+
 (Toolchain bumped from 1.23 to 1.25: the testcontainers-go integration-test
 dependency's own go.mod requires it. Application code has no 1.24+/1.25+
 language-feature dependency — the bump only affects the build image.)

@@ -46,7 +46,7 @@ never from a request body or path parameter. Requests without a valid token get 
 ## Database
 
 ```bash
-# golang-migrate (db/migrations/000001_init.{up,down}.sql)
+# golang-migrate (all files in db/migrations/)
 migrate -path db/migrations -database "mysql://$DSN" up
 # sqlc 코드 생성 (db/queries → internal/repo)
 sqlc generate
@@ -64,8 +64,10 @@ app.schedules.updated.v1
 app.schedules.deleted.v1
 ```
 
-Every schedule mutation publishes the matching event after its DB write commits, using the database's
-own clock (`SELECT UTC_TIMESTAMP(3)`, not application time) as `occurred_at`:
+Every schedule mutation writes the matching serialized event to `event_outbox` in the same transaction
+as its database write, using the database's own clock (`SELECT UTC_TIMESTAMP(3)`, not application time)
+as `occurred_at`. A dispatcher publishes committed rows and retries failures, so a committed mutation
+always has a durable event to deliver:
 
 | action | subject |
 |--------|---------|
@@ -79,9 +81,10 @@ Every publish carries `Content-Type: application/json`, a `Nats-Msg-Id: <subject
 header so JetStream's server-side dedup window absorbs publish retries, and a W3C `traceparent` header
 propagated from the request's trace context via the composite `TraceContext`+`Baggage` propagator.
 
-Publishing is best-effort: if NATS is unreachable (at startup or at publish time), the HTTP request still
-succeeds — the failure is logged and counted (`domain_event_publish_failed_total{subject}`), never
-surfaced as a 5xx to the caller. See `internal/events` for the publisher/stream-declaration code and
+Publishing is asynchronous and best-effort from the HTTP caller's perspective: if NATS is unreachable
+(at startup or at publish time), the HTTP request still succeeds — the durable row is retried with
+exponential backoff, and each failed attempt is logged and counted
+(`domain_event_publish_failed_total{subject}`), never surfaced as a 5xx to the caller. See `internal/events` for the publisher/stream-declaration code and
 `internal/events/*_integration_test.go` / `internal/api/events_integration_test.go` for testcontainers-go
 coverage (dedup, header shape, reminders-snapshot semantics, per-id bulk-delete correctness).
 
@@ -116,7 +119,7 @@ go test ./...
 path without Docker.
 
 `internal/api/integration_test.go` is a full HTTP-level integration test — testcontainers-go boots a real
-MySQL 8 container, applies `db/migrations/000001_init.up.sql`, and drives `/schedules` CRUD, the reminders
+MySQL 8 container, applies the core and event-outbox migrations, and drives `/schedules` CRUD, the reminders
 sub-resource, bulk-delete, cross-user 404 scoping, and JWT authentication (valid token → 200, missing/malformed/
 expired/wrong-key/wrong-issuer/wrong-audience → 401) through the same router/service stack `cmd/server` uses.
 The auth service is not required to be running: the test generates its own ES256 key pair, serves it as a JWKS

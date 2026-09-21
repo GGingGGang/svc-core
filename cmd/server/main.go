@@ -58,7 +58,9 @@ func main() {
 	publisher := setupEventPublisher(ctx, cfg.NATSURL)
 	aiClient := ai.New(cfg.GeminiBaseURL, cfg.GeminiModel, cfg.GeminiAPIKey)
 
-	handler := api.NewHandler(service.New(sqlDB, publisher, aiClient))
+	coreService := service.New(sqlDB, publisher, aiClient)
+	go coreService.RunOutbox(ctx)
+	handler := api.NewHandler(coreService)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,

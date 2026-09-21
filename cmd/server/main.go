@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -64,7 +65,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
-		Handler: otelhttp.NewHandler(api.Router(handler, jwtAuth.Middleware), "svc-core"),
+		Handler: otelhttp.NewHandler(api.CORS(os.Getenv("CORS_ALLOWED_ORIGINS"))(api.Router(handler, jwtAuth.Middleware)), "svc-core"),
 	}
 
 	log.Printf("svc-core %s listening on :%s", version, cfg.HTTPPort)

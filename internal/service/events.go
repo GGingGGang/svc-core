@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"time"
 
 	"github.com/GGingGGang/svc-core/internal/events"
+	"github.com/GGingGGang/svc-core/internal/outbox"
+	"github.com/google/uuid"
 )
 
 // occurredAt asks the database for its current UTC time, immediately after
@@ -20,6 +23,14 @@ func (s *Service) occurredAt(ctx context.Context) time.Time {
 		return time.Now().UTC()
 	}
 	return t.UTC()
+}
+
+func occurredAtTx(ctx context.Context, tx *sql.Tx) (time.Time, error) {
+	var t time.Time
+	if err := tx.QueryRowContext(ctx, "SELECT UTC_TIMESTAMP(3)").Scan(&t); err != nil {
+		return time.Time{}, err
+	}
+	return t.UTC(), nil
 }
 
 // toScheduleEvent builds the schedules.created.v1 / schedules.updated.v1
@@ -46,30 +57,15 @@ func toScheduleEvent(sch *Schedule, occurredAt time.Time) events.ScheduleEvent {
 	}
 }
 
-func (s *Service) publishCreated(ctx context.Context, sch *Schedule, occurredAt time.Time) {
-	if s.pub == nil {
-		return
+func enqueueScheduleEvent(ctx context.Context, tx *sql.Tx, subject string, sch *Schedule) error {
+	occurredAt, err := occurredAtTx(ctx, tx)
+	if err != nil {
+		return err
 	}
-	if err := s.pub.PublishScheduleCreated(ctx, toScheduleEvent(sch, occurredAt)); err != nil {
-		log.Printf("ERROR publish %s failed: schedule_id=%s err=%v", events.SubjectScheduleCreated, sch.ID, err)
-	}
+	return outbox.Enqueue(ctx, tx, subject, sch.ID, occurredAt, toScheduleEvent(sch, occurredAt))
 }
 
-func (s *Service) publishUpdated(ctx context.Context, sch *Schedule, occurredAt time.Time) {
-	if s.pub == nil {
-		return
-	}
-	if err := s.pub.PublishScheduleUpdated(ctx, toScheduleEvent(sch, occurredAt)); err != nil {
-		log.Printf("ERROR publish %s failed: schedule_id=%s err=%v", events.SubjectScheduleUpdated, sch.ID, err)
-	}
-}
-
-func (s *Service) publishDeleted(ctx context.Context, scheduleID, userID string, occurredAt time.Time) {
-	if s.pub == nil {
-		return
-	}
-	evt := events.ScheduleDeletedEvent{ScheduleID: scheduleID, UserID: userID, OccurredAt: occurredAt}
-	if err := s.pub.PublishScheduleDeleted(ctx, evt); err != nil {
-		log.Printf("ERROR publish %s failed: schedule_id=%s err=%v", events.SubjectScheduleDeleted, scheduleID, err)
-	}
+func enqueueDeletedEvent(ctx context.Context, tx *sql.Tx, scheduleID, userID uuid.UUID, occurredAt time.Time) error {
+	evt := events.ScheduleDeletedEvent{ScheduleID: scheduleID.String(), UserID: userID.String(), OccurredAt: occurredAt}
+	return outbox.Enqueue(ctx, tx, events.SubjectScheduleDeleted, scheduleID, occurredAt, evt)
 }

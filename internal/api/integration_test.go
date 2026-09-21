@@ -155,7 +155,7 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 		tcmysql.WithDatabase("core"),
 		tcmysql.WithUsername("core_test"),
 		tcmysql.WithPassword("core_test"),
-		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql"),
+		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql"),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {

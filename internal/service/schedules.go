@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/GGingGGang/svc-core/internal/events"
 	"github.com/GGingGGang/svc-core/internal/repo"
 	"github.com/google/uuid"
 )
@@ -63,21 +64,26 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	occurredAt := s.occurredAt(ctx)
-
-	sch, err := s.GetSchedule(ctx, userID, id)
+	sch, err := getSchedule(ctx, q, userID, id)
 	if err != nil {
 		return nil, err
 	}
-	s.publishCreated(ctx, sch, occurredAt)
+	if err := enqueueScheduleEvent(ctx, tx, events.SubjectScheduleCreated, sch); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.dispatchOutbox(ctx)
 	return sch, nil
 }
 
 func (s *Service) GetSchedule(ctx context.Context, userID, id uuid.UUID) (*Schedule, error) {
-	row, err := s.q.GetSchedule(ctx, repo.GetScheduleParams{ID: idBytes(id), UserID: idBytes(userID)})
+	return getSchedule(ctx, s.q, userID, id)
+}
+
+func getSchedule(ctx context.Context, q *repo.Queries, userID, id uuid.UUID) (*Schedule, error) {
+	row, err := q.GetSchedule(ctx, repo.GetScheduleParams{ID: idBytes(id), UserID: idBytes(userID)})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -85,7 +91,7 @@ func (s *Service) GetSchedule(ctx context.Context, userID, id uuid.UUID) (*Sched
 		return nil, err
 	}
 
-	reminders, err := s.q.ListReminders(ctx, row.ID)
+	reminders, err := q.ListReminders(ctx, row.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +133,17 @@ func (s *Service) ListSchedules(ctx context.Context, userID uuid.UUID, from, to 
 // the mutable columns with fields, which the API layer has already merged
 // against the current row.
 func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fields ScheduleFields) (*Schedule, error) {
-	if _, err := s.GetSchedule(ctx, userID, id); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+	if _, err := getSchedule(ctx, q, userID, id); err != nil {
 		return nil, err
 	}
 
-	if err := s.q.UpdateSchedule(ctx, repo.UpdateScheduleParams{
+	if err := q.UpdateSchedule(ctx, repo.UpdateScheduleParams{
 		Title:       fields.Title,
 		Description: nullString(fields.Description),
 		Location:    nullString(fields.Location),
@@ -144,25 +156,45 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fiel
 	}); err != nil {
 		return nil, err
 	}
-	occurredAt := s.occurredAt(ctx)
-
-	sch, err := s.GetSchedule(ctx, userID, id)
+	sch, err := getSchedule(ctx, q, userID, id)
 	if err != nil {
 		return nil, err
 	}
-	s.publishUpdated(ctx, sch, occurredAt)
+	if err := enqueueScheduleEvent(ctx, tx, events.SubjectScheduleUpdated, sch); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.dispatchOutbox(ctx)
 	return sch, nil
 }
 
 func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID) error {
-	n, err := s.q.DeleteSchedule(ctx, repo.DeleteScheduleParams{ID: idBytes(id), UserID: idBytes(userID)})
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+	n, err := q.DeleteSchedule(ctx, repo.DeleteScheduleParams{ID: idBytes(id), UserID: idBytes(userID)})
 	if err != nil {
 		return err
 	}
 	if n == 0 {
 		return ErrNotFound
 	}
-	s.publishDeleted(ctx, id.String(), userID.String(), s.occurredAt(ctx))
+	occurredAt, err := occurredAtTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.dispatchOutbox(ctx)
 	return nil
 }
 
@@ -179,23 +211,38 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 		idList[i] = idBytes(id)
 	}
 
-	owned, err := s.q.ListScheduleIDsByIDs(ctx, repo.ListScheduleIDsByIDsParams{UserID: idBytes(userID), Ids: idList})
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+	owned, err := q.ListScheduleIDsByIDs(ctx, repo.ListScheduleIDsByIDsParams{UserID: idBytes(userID), Ids: idList})
 	if err != nil {
 		return 0, err
 	}
 
-	n, err := s.q.DeleteSchedulesByIDs(ctx, repo.DeleteSchedulesByIDsParams{UserID: idBytes(userID), Ids: idList})
+	n, err := q.DeleteSchedulesByIDs(ctx, repo.DeleteSchedulesByIDsParams{UserID: idBytes(userID), Ids: idList})
 	if err != nil {
 		return 0, err
 	}
 
-	occurredAt := s.occurredAt(ctx)
+	occurredAt, err := occurredAtTx(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 	for _, raw := range owned {
 		id, err := toUUID(raw)
 		if err != nil {
 			continue
 		}
-		s.publishDeleted(ctx, id.String(), userID.String(), occurredAt)
+		if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt); err != nil {
+			return 0, err
+		}
 	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	s.dispatchOutbox(ctx)
 	return n, nil
 }

@@ -40,7 +40,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	require.NoError(t, events.EnsureStream(ctx, js))
 
 	pub := events.NewPublisher(js)
-	srv, jwks, _ := setupServerWithPublisher(t, pub, nil)
+	srv, jwks, db := setupServerWithPublisher(t, pub, nil)
 	client := srv.Client()
 
 	userID := uuid.New().String()
@@ -152,6 +152,15 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 		require.True(t, seen[id])
 	}
 	require.False(t, seen[neverOwnedID])
+
+	// Each committed mutation first creates one durable outbox row. The
+	// synchronous dispatch attempt in the request path has marked all rows
+	// published; a crash before that mark is safe because JetStream dedups the
+	// worker retry by the unchanged message id.
+	var outboxRows, publishedRows int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*), COUNT(published_at) FROM event_outbox`).Scan(&outboxRows, &publishedRows))
+	require.Equal(t, 9, outboxRows)
+	require.Equal(t, outboxRows, publishedRows)
 
 	// RED + domain event counters are on the app's single /metrics port.
 	status, metricsBody := doRequest(t, client, http.MethodGet, srv.URL+"/metrics", "", nil)

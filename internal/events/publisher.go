@@ -67,6 +67,20 @@ func (p *Publisher) PublishScheduleDeleted(ctx context.Context, evt ScheduleDele
 	return p.publish(ctx, SubjectScheduleDeleted, evt.ScheduleID, evt.OccurredAt, evt)
 }
 
+// PublishSerialized publishes an already serialized event payload. It is used
+// by the transactional outbox after the database transaction has committed.
+// Subject, payload, and JetStream deduplication identifiers stay identical to
+// the direct publisher API so consumers need no contract change.
+func (p *Publisher) PublishSerialized(ctx context.Context, subject, scheduleID string, occurredAt time.Time, data []byte) error {
+	return p.publishData(ctx, subject, scheduleID, occurredAt, data, nil)
+}
+
+// PublishSerializedWithHeaders restores propagation headers captured when the
+// originating HTTP mutation was committed, including on a later retry.
+func (p *Publisher) PublishSerializedWithHeaders(ctx context.Context, subject, scheduleID string, occurredAt time.Time, data []byte, headers map[string]string) error {
+	return p.publishData(ctx, subject, scheduleID, occurredAt, data, headers)
+}
+
 // publish marshals payload, attaches the dedup/tracing/content headers
 // mandated by ../../PLAN.md §7.1, and publishes to JetStream. Every attempt
 // — success or failure — increments the matching Prometheus counter
@@ -86,10 +100,27 @@ func (p *Publisher) publish(ctx context.Context, subject, scheduleID string, occ
 		return fmt.Errorf("marshal %s event: %w", subject, err)
 	}
 
+	return p.publishData(ctx, subject, scheduleID, occurredAt, data, nil)
+}
+
+func (p *Publisher) publishData(ctx context.Context, subject, scheduleID string, occurredAt time.Time, data []byte, headers map[string]string) error {
+	if p.js == nil {
+		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
+		err := fmt.Errorf("publish %s: nats not connected", subject)
+		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
+		return err
+	}
+
 	msg := nats.NewMsg(subject)
 	msg.Data = data
 	msg.Header.Set("Content-Type", "application/json")
-	otel.GetTextMapPropagator().Inject(ctx, natsHeaderCarrier(msg.Header))
+	if len(headers) == 0 {
+		otel.GetTextMapPropagator().Inject(ctx, natsHeaderCarrier(msg.Header))
+	} else {
+		for key, value := range headers {
+			msg.Header[key] = []string{value}
+		}
+	}
 
 	dedupID := fmt.Sprintf("%s:%s:%s", subject, scheduleID, occurredAt.UTC().Format(time.RFC3339Nano))
 

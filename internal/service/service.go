@@ -5,11 +5,14 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"log"
 
 	"github.com/GGingGGang/svc-core/internal/ai"
 	"github.com/GGingGGang/svc-core/internal/events"
+	"github.com/GGingGGang/svc-core/internal/outbox"
 	"github.com/GGingGGang/svc-core/internal/repo"
 )
 
@@ -21,6 +24,7 @@ type Service struct {
 	q      *repo.Queries
 	db     *sql.DB
 	pub    *events.Publisher
+	outbox *outbox.Dispatcher
 	aiClnt *ai.Client
 }
 
@@ -32,5 +36,16 @@ type Service struct {
 // ExtractSchedules (../../PLAN.md §6) and may be nil in tests that never
 // call it.
 func New(db *sql.DB, pub *events.Publisher, aiClnt *ai.Client) *Service {
-	return &Service{q: repo.New(db), db: db, pub: pub, aiClnt: aiClnt}
+	return &Service{q: repo.New(db), db: db, pub: pub, outbox: outbox.NewDispatcher(db, pub), aiClnt: aiClnt}
+}
+
+// RunOutbox continuously retries committed events that could not be sent to
+// NATS. It is owned by the process lifecycle, not an HTTP request.
+func (s *Service) RunOutbox(ctx context.Context) { s.outbox.Run(ctx) }
+
+func (s *Service) dispatchOutbox(ctx context.Context) {
+	if _, err := s.outbox.DispatchOnce(ctx); err != nil {
+		// The durable row remains available for the background worker.
+		log.Printf("ERROR dispatch schedule event outbox: %v", err)
+	}
 }

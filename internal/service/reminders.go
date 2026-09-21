@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-
+	"github.com/GGingGGang/svc-core/internal/events"
 	"github.com/GGingGGang/svc-core/internal/repo"
 	"github.com/google/uuid"
 )
@@ -32,7 +32,13 @@ func (s *Service) ListReminders(ctx context.Context, userID, scheduleID uuid.UUI
 // the full post-insert reminders snapshot (../../PLAN.md §7.3 — reminders is
 // always the complete set, never a delta) before returning the created row.
 func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID, minutesBefore int32, channel string) (*Reminder, error) {
-	sch, err := s.GetSchedule(ctx, userID, scheduleID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+	sch, err := getSchedule(ctx, q, userID, scheduleID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +47,7 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	if err := s.q.AddReminder(ctx, repo.AddReminderParams{
+	if err := q.AddReminder(ctx, repo.AddReminderParams{
 		ID:            idBytes(id),
 		ScheduleID:    idBytes(scheduleID),
 		MinutesBefore: minutesBefore,
@@ -49,9 +55,7 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 	}); err != nil {
 		return nil, err
 	}
-	occurredAt := s.occurredAt(ctx)
-
-	rows, err := s.q.ListReminders(ctx, idBytes(scheduleID))
+	rows, err := q.ListReminders(ctx, idBytes(scheduleID))
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +64,13 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 		return nil, err
 	}
 	sch.Reminders = reminders
-	s.publishUpdated(ctx, sch, occurredAt)
+	if err := enqueueScheduleEvent(ctx, tx, events.SubjectScheduleUpdated, sch); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.dispatchOutbox(ctx)
 
 	for _, rem := range reminders {
 		if rem.ID == id {
@@ -75,21 +85,25 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 // with the remaining reminders snapshot — same "updated" event as any other
 // schedule mutation (../../PLAN.md §5.2).
 func (s *Service) DeleteReminder(ctx context.Context, userID, scheduleID, reminderID uuid.UUID) error {
-	sch, err := s.GetSchedule(ctx, userID, scheduleID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+	sch, err := getSchedule(ctx, q, userID, scheduleID)
 	if err != nil {
 		return err
 	}
 
-	n, err := s.q.DeleteReminder(ctx, repo.DeleteReminderParams{ID: idBytes(reminderID), ScheduleID: idBytes(scheduleID)})
+	n, err := q.DeleteReminder(ctx, repo.DeleteReminderParams{ID: idBytes(reminderID), ScheduleID: idBytes(scheduleID)})
 	if err != nil {
 		return err
 	}
 	if n == 0 {
 		return ErrNotFound
 	}
-	occurredAt := s.occurredAt(ctx)
-
-	rows, err := s.q.ListReminders(ctx, idBytes(scheduleID))
+	rows, err := q.ListReminders(ctx, idBytes(scheduleID))
 	if err != nil {
 		return err
 	}
@@ -98,6 +112,12 @@ func (s *Service) DeleteReminder(ctx context.Context, userID, scheduleID, remind
 		return err
 	}
 	sch.Reminders = reminders
-	s.publishUpdated(ctx, sch, occurredAt)
+	if err := enqueueScheduleEvent(ctx, tx, events.SubjectScheduleUpdated, sch); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.dispatchOutbox(ctx)
 	return nil
 }

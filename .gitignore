@@ -13,5 +13,4 @@ go.work
 go.work.sum
 
 # private docs
-PLAN.md
-CLAUDE.md
+private/

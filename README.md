@@ -57,6 +57,9 @@ must have the permissions required by the migrations. A failed or dirty migratio
 stops startup; it never runs `down` or forces migration history. `/readyz` also checks the database and `event_outbox`,
 while `/healthz` remains process-only.
 
+`db/migrate.go` and `db/migrations/*.sql` must remain in the Docker build
+context for embedding. The unit suite checks that `.dockerignore` includes them.
+
 ## Schedule domain events (NATS JetStream)
 
 On startup this service connects to `NATS_URL` and declares (create-or-update, idempotent — no human

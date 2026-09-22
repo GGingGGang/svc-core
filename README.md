@@ -46,11 +46,16 @@ never from a request body or path parameter. Requests without a valid token get 
 ## Database
 
 ```bash
-# golang-migrate (all files in db/migrations/)
-migrate -path db/migrations -database "mysql://$DSN" up
 # sqlc 코드 생성 (db/queries → internal/repo)
 sqlc generate
 ```
+
+The server applies pending embedded SQL in `db/migrations/` using the existing
+`schema_migrations` history before it listens. Migration locking prevents
+concurrent startup from applying the same change twice. The configured DB user
+must have the permissions required by the migrations. A failed or dirty migration
+stops startup; it never runs `down` or forces migration history. `/readyz` also checks the database and `event_outbox`,
+while `/healthz` remains process-only.
 
 ## Schedule domain events (NATS JetStream)
 
@@ -106,7 +111,6 @@ coverage (dedup, header shape, reminders-snapshot semantics, per-id bulk-delete 
 ```bash
 go mod download
 docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=core mysql:8
-migrate -path db/migrations -database "mysql://root:root@tcp(localhost:3306)/core" up
 DB_HOST=127.0.0.1 DB_USER=root DB_PASSWORD=root DB_NAME=core DB_TLS=false \
   JWT_ISSUER=http://auth.auth.svc.cluster.local:3000 go run ./cmd/server
 go test ./...
@@ -117,6 +121,10 @@ go test ./...
 `go test ./...` runs unit-level checks only — no external services required. This includes
 `internal/events/publisher_test.go`, which covers the nil-JetStream (NATS unreachable) fail-fast-and-count
 path without Docker.
+
+`internal/db/migrate_integration_test.go` checks startup migration on an empty
+database, the version 1 → 2 upgrade, repeated startup, and rejection of dirty
+migration history. It requires Docker and the `integration` build tag.
 
 `internal/api/integration_test.go` is a full HTTP-level integration test — testcontainers-go boots a real
 MySQL 8 container, applies the core and event-outbox migrations, and drives `/schedules` CRUD, the reminders
@@ -169,7 +177,7 @@ docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t core .
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/healthz` | Liveness probe → `{"status":"ok"}` |
-| GET | `/readyz` | Readiness probe → `{"status":"ready"}` |
+| GET | `/readyz` | DB/outbox readiness → 200 `{"status":"ready"}` or 503 `{"status":"not ready"}` |
 | GET | `/openapi.yaml` | OpenAPI 3.0 spec for this API (see below) |
 | POST | `/schedules` | Create a schedule (optionally with `reminders`) |
 | GET | `/schedules?from=&to=&status=` | List schedules in an RFC3339 UTC range |

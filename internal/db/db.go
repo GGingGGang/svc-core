@@ -14,7 +14,11 @@ import (
 
 // Connect opens the MySQL connection pool and verifies it is reachable.
 func Connect(ctx context.Context, cfg config.Config) (*sql.DB, error) {
-	sqlDB, err := sql.Open("mysql", dsn(cfg))
+	return connect(ctx, cfg, false)
+}
+
+func connect(ctx context.Context, cfg config.Config, multiStatements bool) (*sql.DB, error) {
+	sqlDB, err := sql.Open("mysql", dsn(cfg, multiStatements))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -33,13 +37,11 @@ func Connect(ctx context.Context, cfg config.Config) (*sql.DB, error) {
 	return sqlDB, nil
 }
 
-func dsn(cfg config.Config) string {
+func dsn(cfg config.Config, multiStatements bool) string {
 	tls := "false"
 	if cfg.DBTLS {
 		tls = "skip-verify"
 	}
-	return fmt.Sprintf(
-		"%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=UTC&tls=%s",
-		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName, tls,
-	)
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=UTC&tls=%s&multiStatements=%t",
+		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName, tls, multiStatements)
 }

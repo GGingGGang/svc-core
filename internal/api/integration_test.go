@@ -34,6 +34,7 @@ import (
 
 	"github.com/GGingGGang/svc-core/internal/ai"
 	"github.com/GGingGGang/svc-core/internal/api"
+	coredb "github.com/GGingGGang/svc-core/internal/db"
 	"github.com/GGingGGang/svc-core/internal/events"
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 	"github.com/GGingGGang/svc-core/internal/service"
@@ -177,7 +178,7 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 	jwtAuth, err := authmw.NewJWTAuth(jwks.url, testIssuer, testAudience)
 	require.NoError(t, err)
 
-	handler := api.NewHandler(service.New(db, pub, aiClnt))
+	handler := api.NewHandler(service.New(db, pub, aiClnt), func(ctx context.Context) error { return coredb.CheckReady(ctx, db) })
 	srv := httptest.NewServer(api.Router(handler, jwtAuth.Middleware))
 	t.Cleanup(srv.Close)
 	return srv, jwks, db

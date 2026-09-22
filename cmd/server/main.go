@@ -32,6 +32,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if err := db.MigrateUp(ctx, cfg); err != nil {
+		log.Fatalf("migrate database: %v", err)
+	}
 
 	shutdownTracing, err := observability.SetupTracing(ctx)
 	if err != nil {
@@ -50,6 +53,9 @@ func main() {
 		log.Fatalf("connect db: %v", err)
 	}
 	defer sqlDB.Close()
+	if err := db.CheckReady(ctx, sqlDB); err != nil {
+		log.Fatalf("database readiness: %v", err)
+	}
 
 	jwtAuth, err := authmw.NewJWTAuth(cfg.JWKSURL, cfg.JWTIssuer, cfg.JWTAudience)
 	if err != nil {
@@ -61,7 +67,9 @@ func main() {
 
 	coreService := service.New(sqlDB, publisher, aiClient)
 	go coreService.RunOutbox(ctx)
-	handler := api.NewHandler(coreService)
+	handler := api.NewHandler(coreService, func(ctx context.Context) error {
+		return db.CheckReady(ctx, sqlDB)
+	})
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,

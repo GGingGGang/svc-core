@@ -57,6 +57,16 @@ paths:
                   status:
                     type: string
                     example: ready
+        "503":
+          description: database or required outbox table is unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not ready
 
   /metrics:
     get:

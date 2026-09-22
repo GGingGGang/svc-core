@@ -20,7 +20,7 @@ func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Han
 	r.Use(middleware.Recoverer)
 	r.Use(observability.HTTPMetrics)
 	r.Get("/healthz", healthz)
-	r.Get("/readyz", readyz)
+	r.Get("/readyz", h.readyz)
 	r.Handle("/metrics", promhttp.Handler())
 	r.Get("/openapi.yaml", serveOpenAPISpec)
 

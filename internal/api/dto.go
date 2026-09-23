@@ -113,30 +113,35 @@ type extractRequest struct {
 }
 
 type extractCandidateResponse struct {
-	Title       string     `json:"title"`
-	StartAt     time.Time  `json:"start_at"`
-	EndAt       *time.Time `json:"end_at"`
-	AllDay      bool       `json:"all_day"`
-	Location    *string    `json:"location"`
-	Description string     `json:"description"`
-	Confidence  float64    `json:"confidence"`
+	Title             string     `json:"title"`
+	StartAt           *time.Time `json:"start_at"`
+	EndAt             *time.Time `json:"end_at"`
+	AllDay            bool       `json:"all_day"`
+	Location          *string    `json:"location"`
+	Description       string     `json:"description"`
+	Confidence        float64    `json:"confidence"`
+	NeedsConfirmation bool       `json:"needs_confirmation"`
+	Issues            []string   `json:"issues"`
 }
 
 type extractResponse struct {
 	Candidates []extractCandidateResponse `json:"candidates"`
+	Truncated  bool                       `json:"truncated"`
 }
 
-func toExtractResponse(candidates []service.ExtractCandidate) extractResponse {
-	resp := extractResponse{Candidates: make([]extractCandidateResponse, 0, len(candidates))}
+func toExtractResponse(candidates []service.ExtractCandidate, truncated bool) extractResponse {
+	resp := extractResponse{Candidates: make([]extractCandidateResponse, 0, len(candidates)), Truncated: truncated}
 	for _, c := range candidates {
 		resp.Candidates = append(resp.Candidates, extractCandidateResponse{
-			Title:       c.Title,
-			StartAt:     c.StartAt,
-			EndAt:       c.EndAt,
-			AllDay:      c.AllDay,
-			Location:    c.Location,
-			Description: c.Description,
-			Confidence:  c.Confidence,
+			Title:             c.Title,
+			StartAt:           c.StartAt,
+			EndAt:             c.EndAt,
+			AllDay:            c.AllDay,
+			Location:          c.Location,
+			Description:       c.Description,
+			Confidence:        c.Confidence,
+			NeedsConfirmation: c.NeedsConfirmation,
+			Issues:            c.Issues,
 		})
 	}
 	return resp

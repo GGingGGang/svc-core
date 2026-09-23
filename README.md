@@ -151,7 +151,7 @@ the upstream's `Retry-After`, and a non-retryable status (e.g. 400) fails immedi
 
 `internal/api/extract_integration_test.go` boots a real MySQL container and drives `POST /schedules/extract`
 through the full HTTP/service stack against a local Gemini stub (never the real API): a happy-path call returns
-candidates and persists a `success` `ai_extractions` row, text over 4000 chars is rejected with `413` before the
+candidates and persists a `success` `ai_extractions` row, text over 10000 Unicode characters is rejected with `413` before the
 stub is ever called, an invalid `timezone` is `400`, and a stub stuck on `429` surfaces as `429` +
 `Retry-After` to the caller with a `failed` audit row recorded.
 
@@ -211,7 +211,7 @@ POSTing it to `/schedules` with `source=ai` separately.
   a metric label, or stored.
 - **Structured output**: the Gemini request sets `responseSchema` so the model's JSON output matches the `candidates` shape directly — no separate
   parsing/mapping step for the happy path.
-- **Limits**: `text` over 4000 chars → `413` before any Gemini call. Each Gemini HTTP attempt has a 10s timeout. A `429`/5xx response is retried exactly
+- **Limits**: blank `text` → `400`; over 10000 Unicode characters or 64KiB UTF-8 → `413` before any Gemini call. Each Gemini HTTP attempt has a 10s timeout. A `429`/5xx response is retried exactly
   once after a fixed backoff; if the retry also fails, the caller gets `429` with a `Retry-After` header (taken from Gemini's own `Retry-After` when
   present, otherwise a fixed default).
 - **Audit trail**: every call — success, or failure for any reason (missing key, upstream error, malformed response) — writes exactly one `ai_extractions`
@@ -219,6 +219,9 @@ POSTing it to `/schedules` with `source=ai` separately.
   caller's actual request already ran to completion by that point.
 - **Timezone**: `now`/`timezone` let the model convert relative expressions ("다음주 화요일") into absolute UTC timestamps. `timezone` is validated with
   Go's `time.LoadLocation` — the binary embeds the IANA zoneinfo database (`time/tzdata`) since the distroless runtime image ships none.
+- **Confirmation**: every candidate carries `needs_confirmation` and `issues`. Missing or invalid start times return `start_at: null`, never a fabricated timestamp; the client must require correction before saving.
+- **Candidate cap**: the response contains at most 20 candidates and `truncated: true` if Gemini returned more; split the input to inspect the remainder.
+- **No configured key**: if neither BYOK nor the server key is available, the API returns `502 {"error":"ai_key_unavailable"}` so the client can explain why extraction is disabled.
 
 ## OpenAPI spec
 

@@ -37,13 +37,15 @@ func geminiSuccessBody(t *testing.T, title string) []byte {
 	inner := map[string]any{
 		"candidates": []map[string]any{
 			{
-				"title":       title,
-				"start_at":    "2026-07-07T06:00:00Z",
-				"end_at":      nil,
-				"all_day":     false,
-				"location":    "강남역",
-				"description": "",
-				"confidence":  0.9,
+				"title":              title,
+				"start_at":           "2026-07-07T06:00:00Z",
+				"end_at":             nil,
+				"all_day":            false,
+				"location":           "강남역",
+				"description":        "",
+				"confidence":         0.9,
+				"needs_confirmation": false,
+				"issues":             []string{},
 			},
 		},
 	}
@@ -86,14 +88,22 @@ func TestExtractIntegration(t *testing.T) {
 
 		var resp struct {
 			Candidates []struct {
-				Title      string  `json:"title"`
-				Confidence float64 `json:"confidence"`
+				Title             string     `json:"title"`
+				Confidence        float64    `json:"confidence"`
+				StartAt           *time.Time `json:"start_at"`
+				NeedsConfirmation bool       `json:"needs_confirmation"`
+				Issues            []string   `json:"issues"`
 			} `json:"candidates"`
+			Truncated bool `json:"truncated"`
 		}
 		require.NoError(t, json.Unmarshal(body, &resp))
 		require.Len(t, resp.Candidates, 1)
 		require.Equal(t, "통합테스트 회의", resp.Candidates[0].Title)
 		require.InDelta(t, 0.9, resp.Candidates[0].Confidence, 0.0001)
+		require.NotNil(t, resp.Candidates[0].StartAt)
+		require.False(t, resp.Candidates[0].NeedsConfirmation)
+		require.Empty(t, resp.Candidates[0].Issues)
+		require.False(t, resp.Truncated)
 
 		require.Eventually(t, func() bool {
 			var count int
@@ -104,15 +114,33 @@ func TestExtractIntegration(t *testing.T) {
 		}, 5*time.Second, 100*time.Millisecond, "a success ai_extractions row should be recorded")
 	})
 
-	t.Run("text over 4000 chars is rejected before calling gemini", func(t *testing.T) {
+	t.Run("text over 10000 Unicode chars is rejected before calling gemini", func(t *testing.T) {
 		before := atomic.LoadInt32(&geminiCalls)
 		status, _ := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
-			"text":     strings.Repeat("a", 4001),
+			"text":     strings.Repeat("가", 10001),
 			"now":      "2026-06-28T00:00:00Z",
 			"timezone": "UTC",
 		})
 		require.Equal(t, http.StatusRequestEntityTooLarge, status)
 		require.Equal(t, before, atomic.LoadInt32(&geminiCalls), "oversized text must never reach gemini")
+	})
+
+	t.Run("blank text is rejected before calling gemini", func(t *testing.T) {
+		before := atomic.LoadInt32(&geminiCalls)
+		status, _ := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+			"text": "  \n\t ", "now": "2026-06-28T00:00:00Z", "timezone": "UTC",
+		})
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Equal(t, before, atomic.LoadInt32(&geminiCalls))
+	})
+
+	t.Run("oversized request body is rejected before calling gemini", func(t *testing.T) {
+		before := atomic.LoadInt32(&geminiCalls)
+		status, _ := doRequest(t, client, http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+			"text": strings.Repeat("a", 130000), "now": "2026-06-28T00:00:00Z", "timezone": "UTC",
+		})
+		require.Equal(t, http.StatusRequestEntityTooLarge, status)
+		require.Equal(t, before, atomic.LoadInt32(&geminiCalls))
 	})
 
 	t.Run("invalid timezone is rejected", func(t *testing.T) {
@@ -172,4 +200,17 @@ func TestExtractIntegration_RateLimited(t *testing.T) {
 		}
 		return count == 1
 	}, 5*time.Second, 100*time.Millisecond, "a failed extraction must still be recorded")
+}
+
+func TestExtractIntegration_MissingKey(t *testing.T) {
+	geminiCalls := 0
+	gemini := newGeminiStub(t, func(http.ResponseWriter, *http.Request) { geminiCalls++ })
+	srv, jwks, _ := setupServerWithPublisher(t, nil, ai.New(gemini.URL, "gemini-test", ""))
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+		"text": "meeting tomorrow", "now": "2026-06-28T00:00:00Z", "timezone": "UTC",
+	})
+	require.Equal(t, http.StatusBadGateway, status)
+	require.JSONEq(t, `{"error":"ai_key_unavailable"}`, string(body))
+	require.Zero(t, geminiCalls)
 }

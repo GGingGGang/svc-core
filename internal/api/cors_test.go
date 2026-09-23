@@ -15,7 +15,7 @@ func TestCORSPreflight(t *testing.T) {
 	if res.Code != http.StatusNoContent || res.Header().Get("Access-Control-Allow-Origin") != "https://www.ggang.cloud" {
 		t.Fatalf("unexpected CORS response: %d %q", res.Code, res.Header().Get("Access-Control-Allow-Origin"))
 	}
-	if got := res.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, Content-Type, Idempotency-Key" {
-		t.Fatalf("Idempotency-Key preflight is missing: %q", got)
+	if got := res.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, Content-Type, Idempotency-Key, X-Gemini-Key" {
+		t.Fatalf("Idempotency-Key or X-Gemini-Key preflight is missing: %q", got)
 	}
 }

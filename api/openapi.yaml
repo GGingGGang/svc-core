@@ -124,7 +124,8 @@ paths:
               properties:
                 text:
                   type: string
-                  maxLength: 4000
+                  maxLength: 10000
+                  description: Non-blank Unicode text, at most 10000 code points and 64KiB UTF-8
                 now:
                   type: string
                   format: date-time
@@ -142,14 +143,18 @@ paths:
                 properties:
                   candidates:
                     type: array
+                    maxItems: 20
                     items:
                       $ref: "#/components/schemas/ExtractCandidate"
+                  truncated:
+                    type: boolean
+                    description: true when Gemini returned more than 20 candidates; split the input and retry
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "413":
-          description: text exceeds the 4000 character limit
+          description: text exceeds the 10000-character or 64KiB UTF-8 limit
           content:
             application/json:
               schema:
@@ -166,7 +171,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "502":
-          description: Gemini call failed (no key configured, upstream error, or malformed response)
+          description: Gemini call failed; error is ai_key_unavailable when no caller or server key exists
           content:
             application/json:
               schema:
@@ -614,6 +619,7 @@ components:
         start_at:
           type: string
           format: date-time
+          nullable: true
         end_at:
           type: string
           format: date-time
@@ -628,6 +634,14 @@ components:
         confidence:
           type: number
           description: model's 0-1 confidence estimate for this candidate
+        needs_confirmation:
+          type: boolean
+          description: true if any required field is missing, invalid, or ambiguous
+        issues:
+          type: array
+          items:
+            type: string
+          description: validation or ambiguity issue codes; empty for a valid candidate
 
     Schedule:
       type: object

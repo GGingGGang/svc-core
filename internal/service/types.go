@@ -78,13 +78,15 @@ type ExtractInput struct {
 // package only ever imports service, never internal/ai directly (matching
 // the existing service-is-the-facade layering).
 type ExtractCandidate struct {
-	Title       string
-	StartAt     time.Time
-	EndAt       *time.Time
-	AllDay      bool
-	Location    *string
-	Description string
-	Confidence  float64
+	Title             string
+	StartAt           *time.Time
+	EndAt             *time.Time
+	AllDay            bool
+	Location          *string
+	Description       string
+	Confidence        float64
+	NeedsConfirmation bool
+	Issues            []string
 }
 
 // ExtractRateLimitedError is returned by ExtractSchedules when the Gemini

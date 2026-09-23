@@ -14,6 +14,8 @@ import (
 	"github.com/GGingGGang/svc-core/internal/repo"
 )
 
+var ErrExtractKeyUnavailable = errors.New("no Gemini key configured or supplied")
+
 // ExtractSchedules calls Gemini to turn free-form text into schedule
 // candidates (../../PLAN.md §6). It records exactly one ai_extractions row
 // regardless of outcome — success, partial (upstream ok but the response
@@ -21,7 +23,7 @@ import (
 // audit trail exists even when extraction ultimately fails. The audit
 // insert itself is best-effort: a DB error there is logged, not surfaced,
 // since the caller's actual request (extraction) already ran to completion.
-func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in ExtractInput) ([]ExtractCandidate, error) {
+func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in ExtractInput) ([]ExtractCandidate, bool, error) {
 	start := time.Now()
 	result, extractErr := s.aiClnt.Extract(ctx, in.APIKey, ai.ExtractInput{
 		Text:     in.Text,
@@ -47,13 +49,16 @@ func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in Ext
 	s.recordExtraction(ctx, userID, in.Text, resultJSON, status, latencyMs)
 
 	if extractErr != nil {
+		if errors.Is(extractErr, ai.ErrMissingAPIKey) {
+			return nil, false, ErrExtractKeyUnavailable
+		}
 		var rl *ai.RateLimitedError
 		if errors.As(extractErr, &rl) {
-			return nil, &ExtractRateLimitedError{RetryAfter: rl.RetryAfter}
+			return nil, false, &ExtractRateLimitedError{RetryAfter: rl.RetryAfter}
 		}
-		return nil, extractErr
+		return nil, false, extractErr
 	}
-	return candidates, nil
+	return candidates, result.Truncated, nil
 }
 
 func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, rawText string, resultJSON []byte, status repo.AiExtractionsStatus, latencyMs int32) {
@@ -86,13 +91,15 @@ func toExtractCandidates(cs []ai.Candidate) []ExtractCandidate {
 	out := make([]ExtractCandidate, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, ExtractCandidate{
-			Title:       c.Title,
-			StartAt:     c.StartAt.UTC(),
-			EndAt:       utcPtrTime(c.EndAt),
-			AllDay:      c.AllDay,
-			Location:    c.Location,
-			Description: c.Description,
-			Confidence:  c.Confidence,
+			Title:             c.Title,
+			StartAt:           utcPtrTime(c.StartAt),
+			EndAt:             utcPtrTime(c.EndAt),
+			AllDay:            c.AllDay,
+			Location:          c.Location,
+			Description:       c.Description,
+			Confidence:        c.Confidence,
+			NeedsConfirmation: c.NeedsConfirmation,
+			Issues:            c.Issues,
 		})
 	}
 	return out

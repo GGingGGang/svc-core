@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
 	"github.com/GGingGGang/svc-core/internal/service"
@@ -13,7 +15,9 @@ import (
 
 // maxExtractTextChars is the /schedules/extract input limit (../../PLAN.md
 // §6) — text over this is rejected with 413 before any Gemini call.
-const maxExtractTextChars = 4000
+const maxExtractTextChars = 10000
+const maxExtractTextBytes = 64 << 10
+const maxExtractBodyBytes = 128 << 10
 
 func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 	userID, ok := authmw.UserID(r.Context())
@@ -23,7 +27,13 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req extractRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxExtractBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -31,8 +41,12 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(req.Text) > maxExtractTextChars {
-		writeError(w, http.StatusRequestEntityTooLarge, "text exceeds 4000 characters")
+	if strings.TrimSpace(req.Text) == "" {
+		writeError(w, http.StatusBadRequest, "text must not be blank")
+		return
+	}
+	if utf8.RuneCountInString(req.Text) > maxExtractTextChars || len(req.Text) > maxExtractTextBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "text exceeds 10000 characters or 64KiB")
 		return
 	}
 	if _, err := time.LoadLocation(req.Timezone); err != nil {
@@ -40,13 +54,17 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := h.svc.ExtractSchedules(r.Context(), userID, service.ExtractInput{
+	candidates, truncated, err := h.svc.ExtractSchedules(r.Context(), userID, service.ExtractInput{
 		Text:     req.Text,
 		Now:      req.Now.UTC(),
 		Timezone: req.Timezone,
 		APIKey:   r.Header.Get("X-Gemini-Key"),
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrExtractKeyUnavailable) {
+			writeError(w, http.StatusBadGateway, "ai_key_unavailable")
+			return
+		}
 		var rl *service.ExtractRateLimitedError
 		if errors.As(err, &rl) {
 			w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter.Seconds())))
@@ -56,5 +74,5 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "extraction failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, toExtractResponse(candidates))
+	writeJSON(w, http.StatusOK, toExtractResponse(candidates, truncated))
 }

@@ -19,6 +19,7 @@ import (
 // ErrNotFound is returned whenever a schedule/reminder does not exist or
 // does not belong to the requesting user.
 var ErrNotFound = errors.New("not found")
+var ErrIdempotencyConflict = errors.New("idempotency key reused with different content")
 
 type Service struct {
 	q      *repo.Queries

@@ -41,20 +41,20 @@ func TestMigrateUpFromVersionOne(t *testing.T) {
 	require.NoError(t, err)
 	cfg := config.Config{DBHost: host, DBPort: port.Port(), DBUser: "core_test", DBPassword: "core_test", DBName: "core", DBTLS: false}
 
-	require.NoError(t, MigrateUp(ctx, cfg), "v1 deployment must apply event_outbox v2")
+	require.NoError(t, MigrateUp(ctx, cfg), "v1 deployment must apply all pending migrations")
 	require.NoError(t, CheckReady(ctx, sqlDB))
 	require.NoError(t, MigrateUp(ctx, cfg), "repeat startup must be idempotent")
 	var version int
 	var dirty bool
 	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty))
-	require.Equal(t, 2, version)
+	require.Equal(t, 3, version)
 	require.False(t, dirty)
 
 	_, err = sqlDB.ExecContext(ctx, "UPDATE schema_migrations SET dirty=TRUE")
 	require.NoError(t, err)
 	var dirtyErr migrate.ErrDirty
 	require.ErrorAs(t, MigrateUp(ctx, cfg), &dirtyErr, "dirty migration history must stop startup")
-	require.Equal(t, 2, dirtyErr.Version)
+	require.Equal(t, 3, dirtyErr.Version)
 }
 
 func TestMigrateUpOnNewDatabase(t *testing.T) {

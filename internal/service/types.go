@@ -38,16 +38,17 @@ type ScheduleFields struct {
 }
 
 type CreateScheduleInput struct {
-	Title        string
-	Description  *string
-	Location     *string
-	StartAt      time.Time
-	EndAt        *time.Time
-	AllDay       bool
-	Status       string
-	Source       string
-	ExtractionID *uuid.UUID
-	Reminders    []ReminderInput
+	IdempotencyKey string
+	Title          string
+	Description    *string
+	Location       *string
+	StartAt        time.Time
+	EndAt          *time.Time
+	AllDay         bool
+	Status         string
+	Source         string
+	ExtractionID   *uuid.UUID
+	Reminders      []ReminderInput
 }
 
 type Reminder struct {

@@ -54,7 +54,7 @@ The server applies pending embedded SQL in `db/migrations/` using the existing
 `schema_migrations` history before it listens. Migration locking prevents
 concurrent startup from applying the same change twice. The configured DB user
 must have the permissions required by the migrations. A failed or dirty migration
-stops startup; it never runs `down` or forces migration history. `/readyz` also checks the database and `event_outbox`,
+stops startup; it never runs `down` or forces migration history. `/readyz` also checks the database, `event_outbox`, and `schedule_create_requests`,
 while `/healthz` remains process-only.
 
 `db/migrate.go` and `db/migrations/*.sql` must remain in the Docker build
@@ -194,6 +194,13 @@ docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t core .
 | POST | `/schedules/extract` | `{text, now, timezone}` → Gemini extraction → `{candidates:[...]}` (not persisted) |
 
 Accessing another user's schedule (or a nonexistent one) always returns 404, never 403.
+
+`POST /schedules` accepts an optional `Idempotency-Key` (up to 128 characters).
+The same user, key, and normalized content return the original `201` response
+for 24 hours, including after the schedule is deleted; changing content with
+the same key returns `409`. Send a new key for a genuinely new save. Omitting
+the header preserves legacy behavior. The header name and 24-hour window are
+the current D00 contract assumption pending shared sign-off.
 
 ## Gemini text extraction
 

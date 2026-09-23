@@ -176,6 +176,18 @@ paths:
     post:
       tags: [Schedules]
       summary: Create a schedule
+      description: >-
+        Optional Idempotency-Key protects one create operation for 24 hours.
+        Repeating the same key and content for the same user returns the original
+        schedule with 201; changing the content returns 409. Omitting the header
+        keeps legacy non-idempotent behavior.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Client-generated identifier, at most 128 characters
+          schema:
+            type: string
+            maxLength: 128
       requestBody:
         required: true
         content:
@@ -193,6 +205,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Idempotency-Key was already used with different content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 

@@ -1,22 +1,21 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/GGingGGang/svc-core/internal/events"
 	"github.com/GGingGGang/svc-core/internal/repo"
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 )
 
 func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in CreateScheduleInput) (*Schedule, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return nil, err
-	}
-
 	status := in.Status
 	if status == "" {
 		status = string(repo.SchedulesStatusConfirmed)
@@ -25,12 +24,22 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 	if source == "" {
 		source = string(repo.SchedulesSourceManual)
 	}
+	in.Status, in.Source = status, source
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	if in.IdempotencyKey != "" {
+		if previous, err := claimScheduleCreate(ctx, tx, userID, in); err != nil || previous != nil {
+			return previous, err
+		}
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return nil, err
+	}
 
 	q := s.q.WithTx(tx)
 	if err := q.CreateSchedule(ctx, repo.CreateScheduleParams{
@@ -71,11 +80,55 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 	if err := enqueueScheduleEvent(ctx, tx, events.SubjectScheduleCreated, sch); err != nil {
 		return nil, err
 	}
+	if in.IdempotencyKey != "" {
+		payload, err := json.Marshal(sch)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE schedule_create_requests SET response_json = ? WHERE user_id = ? AND idempotency_key = ?", payload, idBytes(userID), in.IdempotencyKey); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	s.dispatchOutbox(ctx)
 	return sch, nil
+}
+
+// claimScheduleCreate locks one user's create operation until its schedule,
+// reminders, outbox event, and replay response commit together.
+func claimScheduleCreate(ctx context.Context, tx *sql.Tx, userID uuid.UUID, in CreateScheduleInput) (*Schedule, error) {
+	key := in.IdempotencyKey
+	in.IdempotencyKey = ""
+	request, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(request)
+	if _, err := tx.ExecContext(ctx, "DELETE FROM schedule_create_requests WHERE user_id = ? AND idempotency_key = ? AND expires_at <= UTC_TIMESTAMP(3)", idBytes(userID), key); err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO schedule_create_requests (user_id, idempotency_key, request_hash, expires_at) VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 24 HOUR))", idBytes(userID), key, hash[:])
+	if err == nil {
+		return nil, nil
+	}
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
+		return nil, err
+	}
+	var savedHash, response []byte
+	if err := tx.QueryRowContext(ctx, "SELECT request_hash, response_json FROM schedule_create_requests WHERE user_id = ? AND idempotency_key = ? FOR UPDATE", idBytes(userID), key).Scan(&savedHash, &response); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(savedHash, hash[:]) {
+		return nil, ErrIdempotencyConflict
+	}
+	var sch Schedule
+	if err := json.Unmarshal(response, &sch); err != nil {
+		return nil, err
+	}
+	return &sch, nil
 }
 
 func (s *Service) GetSchedule(ctx context.Context, userID, id uuid.UUID) (*Schedule, error) {

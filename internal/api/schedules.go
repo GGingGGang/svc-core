@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +49,11 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	key := r.Header.Get("Idempotency-Key")
+	if len(key) > 128 || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n\t") {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
+		return
+	}
 
 	var extractionID *uuid.UUID
 	if req.ExtractionID != nil {
@@ -65,17 +71,22 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sch, err := h.svc.CreateSchedule(r.Context(), userID, service.CreateScheduleInput{
-		Title:        req.Title,
-		Description:  req.Description,
-		Location:     req.Location,
-		StartAt:      req.StartAt.UTC(),
-		EndAt:        utcPtr(req.EndAt),
-		AllDay:       req.AllDay,
-		Status:       req.Status,
-		Source:       req.Source,
-		ExtractionID: extractionID,
-		Reminders:    reminders,
+		IdempotencyKey: key,
+		Title:          req.Title,
+		Description:    req.Description,
+		Location:       req.Location,
+		StartAt:        req.StartAt.UTC(),
+		EndAt:          utcPtr(req.EndAt),
+		AllDay:         req.AllDay,
+		Status:         req.Status,
+		Source:         req.Source,
+		ExtractionID:   extractionID,
+		Reminders:      reminders,
 	})
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create schedule")
 		return

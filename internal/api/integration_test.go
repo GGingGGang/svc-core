@@ -156,7 +156,7 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 		tcmysql.WithDatabase("core"),
 		tcmysql.WithUsername("core_test"),
 		tcmysql.WithPassword("core_test"),
-		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql"),
+		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql"),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -178,7 +178,17 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 	jwtAuth, err := authmw.NewJWTAuth(jwks.url, testIssuer, testAudience)
 	require.NoError(t, err)
 
-	handler := api.NewHandler(service.New(db, pub, aiClnt), func(ctx context.Context) error { return coredb.CheckReady(ctx, db) })
+	coreService := service.New(db, pub, aiClnt)
+	if pub != nil {
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			coreService.RunOutbox(workerCtx)
+			close(done)
+		}()
+		t.Cleanup(func() { cancel(); <-done })
+	}
+	handler := api.NewHandler(coreService, func(ctx context.Context) error { return coredb.CheckReady(ctx, db) })
 	srv := httptest.NewServer(api.Router(handler, jwtAuth.Middleware))
 	t.Cleanup(srv.Close)
 	return srv, jwks, db
@@ -421,4 +431,58 @@ func TestSchedulesIntegration(t *testing.T) {
 		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", wrongIss, nil)
 		require.Equal(t, http.StatusUnauthorized, status)
 	})
+}
+
+func TestCreateScheduleIdempotency(t *testing.T) {
+	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	user := jwks.mint(t, uuid.New().String(), time.Hour)
+	otherUser := jwks.mint(t, uuid.New().String(), time.Hour)
+	key := uuid.New().String()
+	body := `{"title":"retry me","start_at":"2026-10-01T09:00:00Z","reminders":[{"minutes_before":15,"channel":"push"}]}`
+	post := func(token, payload string) (int, scheduleJSON) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules", bytes.NewBufferString(payload))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", key)
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var schedule scheduleJSON
+		if resp.StatusCode == http.StatusCreated {
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&schedule))
+		}
+		return resp.StatusCode, schedule
+	}
+
+	status, first := post(user, body)
+	require.Equal(t, http.StatusCreated, status)
+	status, replay := post(user, body)
+	require.Equal(t, http.StatusCreated, status)
+	require.Equal(t, first, replay, "retry must return the original schedule and reminder IDs")
+
+	status, _ = post(user, `{"title":"different","start_at":"2026-10-01T09:00:00Z"}`)
+	require.Equal(t, http.StatusConflict, status)
+	status, separate := post(otherUser, body)
+	require.Equal(t, http.StatusCreated, status)
+	require.NotEqual(t, first.ID, separate.ID, "the key is scoped to one user")
+
+	var schedules, events int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schedules").Scan(&schedules))
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM event_outbox").Scan(&events))
+	require.Equal(t, 2, schedules)
+	require.Equal(t, 2, events)
+
+	status, _ = doRequest(t, srv.Client(), http.MethodDelete, srv.URL+"/schedules/"+first.ID, user, nil)
+	require.Equal(t, http.StatusNoContent, status)
+	status, replay = post(user, body)
+	require.Equal(t, http.StatusCreated, status)
+	require.Equal(t, first, replay, "a deleted schedule must not be recreated by a retry")
+
+	_, err := db.Exec("UPDATE schedule_create_requests SET expires_at = UTC_TIMESTAMP(3) - INTERVAL 1 SECOND WHERE idempotency_key = ?", key)
+	require.NoError(t, err)
+	status, afterExpiry := post(user, body)
+	require.Equal(t, http.StatusCreated, status)
+	require.NotEqual(t, first.ID, afterExpiry.ID, "an expired key may start a new save")
 }

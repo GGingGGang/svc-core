@@ -1,7 +1,9 @@
 package api
 
 import (
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/GGingGGang/svc-core/internal/service"
 )
@@ -10,6 +12,11 @@ import (
 // (unlike create) decodes a raw JSON map rather than a validator-tagged
 // struct so it can distinguish "field omitted" from "field set to null".
 var validStatuses = map[string]bool{"confirmed": true, "tentative": true, "cancelled": true}
+
+func normalizeTitle(title string) (string, bool) {
+	title = strings.TrimSpace(title)
+	return title, title != "" && utf8.RuneCountInString(title) <= 255
+}
 
 type reminderRequest struct {
 	// no "required" here: 0 (remind exactly at start_at) is a valid value

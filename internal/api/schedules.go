@@ -32,6 +32,12 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	var validTitle bool
+	req.Title, validTitle = normalizeTitle(req.Title)
+	if !validTitle {
+		writeError(w, http.StatusBadRequest, "title must contain 1 to 255 characters")
+		return
+	}
 	if req.Status == "" {
 		req.Status = "confirmed"
 	}
@@ -190,15 +196,16 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 
 	if v, ok := raw["title"]; ok {
 		var p *string
-		if err := json.Unmarshal(v, &p); err != nil || p == nil || *p == "" {
+		if err := json.Unmarshal(v, &p); err != nil || p == nil {
 			writeError(w, http.StatusBadRequest, "title must be a non-empty string")
 			return
 		}
-		if len(*p) > 255 {
-			writeError(w, http.StatusBadRequest, "title too long")
+		title, valid := normalizeTitle(*p)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "title must contain 1 to 255 characters")
 			return
 		}
-		fields.Title = *p
+		fields.Title = title
 	}
 	if v, ok := raw["description"]; ok {
 		var p *string

@@ -83,6 +83,7 @@ func TestExtract_InvalidCandidateNeedsConfirmation(t *testing.T) {
 		{"title": "valid", "start_at": "2026-07-07T06:00:00Z", "all_day": false, "confidence": 0.9, "needs_confirmation": false, "issues": []string{}},
 		{"title": "missing date", "start_at": nil, "all_day": false, "confidence": 0.8, "needs_confirmation": true, "issues": []string{"missing_start_at"}},
 		{"title": "invalid date", "start_at": "tomorrow", "all_day": false, "confidence": 0.8, "needs_confirmation": false, "issues": []string{}},
+		{"title": "equal times", "start_at": "2026-07-07T06:00:00Z", "end_at": "2026-07-07T06:00:00Z", "all_day": false, "confidence": 0.8, "needs_confirmation": false, "issues": []string{}},
 	}})
 	require.NoError(t, err)
 	envelope, err := json.Marshal(map[string]any{"candidates": []map[string]any{{"content": map[string]any{"parts": []map[string]any{{"text": string(inner)}}}}}})
@@ -90,7 +91,7 @@ func TestExtract_InvalidCandidateNeedsConfirmation(t *testing.T) {
 	srv := stubGeminiServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(envelope) })
 	result, err := ai.New(srv.URL, "gemini-test", "key").Extract(context.Background(), "", ai.ExtractInput{Text: "three dates", Now: time.Now(), Timezone: "UTC"})
 	require.NoError(t, err)
-	require.Len(t, result.Candidates, 3)
+	require.Len(t, result.Candidates, 4)
 	require.False(t, result.Candidates[0].NeedsConfirmation)
 	require.NotNil(t, result.Candidates[0].StartAt)
 	require.True(t, result.Candidates[1].NeedsConfirmation)
@@ -99,6 +100,8 @@ func TestExtract_InvalidCandidateNeedsConfirmation(t *testing.T) {
 	require.True(t, result.Candidates[2].NeedsConfirmation)
 	require.Nil(t, result.Candidates[2].StartAt)
 	require.Contains(t, result.Candidates[2].Issues, "invalid_start_at")
+	require.True(t, result.Candidates[3].NeedsConfirmation)
+	require.Contains(t, result.Candidates[3].Issues, "end_not_after_start")
 }
 
 func TestExtract_CapsCandidates(t *testing.T) {
@@ -141,6 +144,14 @@ func TestExtract_MissingAPIKey(t *testing.T) {
 	_, err := c.Extract(context.Background(), "", ai.ExtractInput{Text: "x", Now: time.Now(), Timezone: "UTC"})
 	require.ErrorIs(t, err, ai.ErrMissingAPIKey)
 	require.False(t, called, "no HTTP call should be made without a key (BYOK or fallback)")
+}
+
+func TestExtract_InvalidAPIKey(t *testing.T) {
+	srv := stubGeminiServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	_, err := ai.New(srv.URL, "gemini-test", "bad-key").Extract(context.Background(), "", ai.ExtractInput{Text: "meeting", Now: time.Now(), Timezone: "UTC"})
+	require.ErrorIs(t, err, ai.ErrInvalidAPIKey)
 }
 
 // TestExtract_RetriesOnceThenSucceeds covers the 429-then-recover half of

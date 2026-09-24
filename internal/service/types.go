@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,7 @@ type Schedule struct {
 	ExtractionID *uuid.UUID
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	Revision     int64
 	Reminders    []Reminder
 }
 
@@ -95,6 +97,10 @@ type ExtractCandidate struct {
 type ExtractRateLimitedError struct {
 	RetryAfter time.Duration
 }
+
+var ErrExtractBusy = errors.New("extract: another request is in progress")
+var ErrExtractUserRateLimited = errors.New("extract: user request limit reached")
+var ErrExtractInvalidKey = errors.New("extract: invalid api key")
 
 func (e *ExtractRateLimitedError) Error() string {
 	return "extract: gemini rate limited"

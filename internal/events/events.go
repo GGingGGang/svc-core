@@ -39,6 +39,8 @@ type ScheduleEvent struct {
 	EndAt      *time.Time         `json:"end_at"`
 	AllDay     bool               `json:"all_day"`
 	Source     string             `json:"source"`
+	Status     string             `json:"status"`
+	Revision   int64              `json:"revision"`
 	Reminders  []ReminderSnapshot `json:"reminders"`
 	OccurredAt time.Time          `json:"occurred_at"`
 }
@@ -49,4 +51,5 @@ type ScheduleDeletedEvent struct {
 	ScheduleID string    `json:"schedule_id"`
 	UserID     string    `json:"user_id"`
 	OccurredAt time.Time `json:"occurred_at"`
+	Revision   int64     `json:"revision"`
 }

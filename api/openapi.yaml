@@ -4,7 +4,8 @@ info:
   description: >-
     Schedule domain API: schedule CRUD, reminders, bulk-delete, and Gemini
     text extraction. Documents only the endpoints that are actually
-    implemented and reachable in this build.
+    implemented and reachable in this build. Error responses include a
+    generated X-Request-ID header for log and event correlation.
   version: "1.0.0"
 servers:
   - url: http://core.core.svc.cluster.local:8080
@@ -269,7 +270,14 @@ paths:
       description: >-
         Ids that do not exist, or belong to a different user, are silently
         excluded from the delete rather than causing an error; the response
-        reports how many rows were actually removed.
+        reports how many rows were actually removed. Optional Idempotency-Key
+        preserves the first result for 24 hours.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
       requestBody:
         required: true
         content:
@@ -300,6 +308,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -332,7 +342,14 @@ paths:
         Only the fields present in the request body are changed; omitted
         fields keep their current value. A field set explicitly to null is
         rejected with 400 for every field except description and location,
-        which are nullable.
+        which are nullable. Optional Idempotency-Key preserves the first
+        result for 24 hours; reusing it with different content returns 409.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
       requestBody:
         required: true
         content:
@@ -352,13 +369,23 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
     delete:
       tags: [Schedules]
       summary: Hard delete a schedule
-      description: Deletes the schedule (and its reminders, via cascade) immediately.
+      description: >-
+        Deletes the schedule (and its reminders, via cascade) immediately.
+        Optional Idempotency-Key makes retries return 204 for 24 hours.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
       responses:
         "204":
           description: deleted
@@ -368,6 +395,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -401,6 +430,13 @@ paths:
     post:
       tags: [Reminders]
       summary: Add a reminder to a schedule
+      description: Optional Idempotency-Key preserves the created reminder for 24 hours.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
       requestBody:
         required: true
         content:
@@ -420,6 +456,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -435,6 +473,13 @@ paths:
     delete:
       tags: [Reminders]
       summary: Remove a reminder
+      description: Optional Idempotency-Key makes retries return 204 for 24 hours.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
       responses:
         "204":
           description: deleted
@@ -444,6 +489,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -486,6 +533,12 @@ components:
       description: >-
         the resource does not exist, or belongs to a different user
         (ownership never leaks as a distinct 403)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Idempotency-Key was already used with different content
       content:
         application/json:
           schema:

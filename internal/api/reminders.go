@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -62,8 +63,23 @@ func (h *Handler) AddReminder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	key, validKey := idempotencyKey(r)
+	if !validKey {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
+		return
+	}
+	canonical, err := json.Marshal(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid reminder")
+		return
+	}
+	hash := sha256.Sum256(canonical)
 
-	rem, err := h.svc.AddReminder(r.Context(), userID, scheduleID, req.MinutesBefore, req.Channel)
+	rem, err := h.svc.AddReminder(r.Context(), userID, scheduleID, req.MinutesBefore, req.Channel, key, hash)
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
 		return
@@ -92,7 +108,16 @@ func (h *Handler) DeleteReminder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.svc.DeleteReminder(r.Context(), userID, scheduleID, reminderID)
+	key, validKey := idempotencyKey(r)
+	if !validKey {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
+		return
+	}
+	err = h.svc.DeleteReminder(r.Context(), userID, scheduleID, reminderID, key)
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "reminder not found")
 		return

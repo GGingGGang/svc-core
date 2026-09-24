@@ -209,6 +209,7 @@ type Schedule struct {
 	ExtractionID sql.NullString  `json:"extraction_id"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+	Revision     int64           `json:"revision"`
 }
 
 type ScheduleReminder struct {

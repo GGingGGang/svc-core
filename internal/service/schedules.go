@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/GGingGGang/svc-core/internal/events"
+	"github.com/GGingGGang/svc-core/internal/observability"
 	"github.com/GGingGGang/svc-core/internal/repo"
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
@@ -92,6 +94,7 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	observability.ScheduleMutationsTotal.WithLabelValues("create").Inc()
 	s.dispatchOutbox(ctx)
 	return sch, nil
 }
@@ -128,11 +131,45 @@ func claimScheduleCreate(ctx context.Context, tx *sql.Tx, userID uuid.UUID, in C
 	if err := json.Unmarshal(response, &sch); err != nil {
 		return nil, err
 	}
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM schedules WHERE id = ? AND user_id = ?", idBytes(sch.ID), idBytes(userID)).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrIdempotencyConflict
+	} else if err != nil {
+		return nil, err
+	}
 	return &sch, nil
 }
 
 func (s *Service) GetSchedule(ctx context.Context, userID, id uuid.UUID) (*Schedule, error) {
 	return getSchedule(ctx, s.q, userID, id)
+}
+
+// ReplayScheduleUpdate answers a committed retry before PATCH merges omitted
+// fields with the current row, which may have changed since the first write.
+func (s *Service) ReplayScheduleUpdate(ctx context.Context, userID, id uuid.UUID, key string, requestHash [32]byte) (*Schedule, bool, error) {
+	if key == "" {
+		return nil, false, nil
+	}
+	var savedID, savedHash, response []byte
+	err := s.db.QueryRowContext(ctx, `SELECT schedule_id, request_hash, response_json FROM schedule_mutation_requests
+ WHERE user_id = ? AND operation = 'update' AND idempotency_key = ? AND expires_at > UTC_TIMESTAMP(3)`, idBytes(userID), key).Scan(&savedID, &savedHash, &response)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !bytes.Equal(savedID, idBytes(id)) || !bytes.Equal(savedHash, requestHash[:]) {
+		return nil, false, ErrIdempotencyConflict
+	}
+	if _, err := s.GetSchedule(ctx, userID, id); err != nil {
+		return nil, false, err
+	}
+	var saved Schedule
+	if err := json.Unmarshal(response, &saved); err != nil {
+		return nil, false, err
+	}
+	return &saved, true, nil
 }
 
 func getSchedule(ctx context.Context, q *repo.Queries, userID, id uuid.UUID) (*Schedule, error) {
@@ -185,14 +222,34 @@ func (s *Service) ListSchedules(ctx context.Context, userID uuid.UUID, from, to 
 // UpdateSchedule confirms ownership (ErrNotFound otherwise) then overwrites
 // the mutable columns with fields, which the API layer has already merged
 // against the current row.
-func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fields ScheduleFields) (*Schedule, error) {
+func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fields ScheduleFields, key string, requestHash [32]byte) (*Schedule, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	if key != "" {
+		response, replay, err := claimScheduleMutation(ctx, tx, userID, id, "update", key, requestHash)
+		if err != nil {
+			return nil, err
+		}
+		if replay {
+			var saved Schedule
+			if err := json.Unmarshal(response, &saved); err != nil {
+				return nil, err
+			}
+			if _, err := lockScheduleRevision(ctx, tx, userID, id); err != nil {
+				return nil, err
+			}
+			return &saved, nil
+		}
+	}
 	q := s.q.WithTx(tx)
-	if _, err := getSchedule(ctx, q, userID, id); err != nil {
+	if _, err := lockScheduleRevision(ctx, tx, userID, id); err != nil {
+		return nil, err
+	}
+	before, err := getSchedule(ctx, q, userID, id)
+	if err != nil {
 		return nil, err
 	}
 
@@ -216,19 +273,42 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fiel
 	if err := enqueueScheduleEvent(ctx, tx, events.SubjectScheduleUpdated, sch); err != nil {
 		return nil, err
 	}
+	if key != "" {
+		response, err := json.Marshal(sch)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE schedule_mutation_requests SET response_json = ? WHERE user_id = ? AND operation = 'update' AND idempotency_key = ?", response, idBytes(userID), key); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	if before.Status != "cancelled" && fields.Status == "cancelled" {
+		observability.ScheduleMutationsTotal.WithLabelValues("cancel").Inc()
 	}
 	s.dispatchOutbox(ctx)
 	return sch, nil
 }
 
-func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID) error {
+func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID, key string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if key != "" {
+		replayedHash := sha256.Sum256(idBytes(id))
+		_, replay, err := claimScheduleMutation(ctx, tx, userID, id, "delete", key, replayedHash)
+		if err != nil || replay {
+			return err
+		}
+	}
+	revision, err := lockScheduleRevision(ctx, tx, userID, id)
+	if err != nil {
+		return err
+	}
 	q := s.q.WithTx(tx)
 	n, err := q.DeleteSchedule(ctx, repo.DeleteScheduleParams{ID: idBytes(id), UserID: idBytes(userID)})
 	if err != nil {
@@ -241,14 +321,40 @@ func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID) erro
 	if err != nil {
 		return err
 	}
-	if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt); err != nil {
+	if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt, revision+1); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	observability.ScheduleMutationsTotal.WithLabelValues("delete").Inc()
 	s.dispatchOutbox(ctx)
 	return nil
+}
+
+func claimScheduleMutation(ctx context.Context, tx *sql.Tx, userID, scheduleID uuid.UUID, operation, key string, requestHash [32]byte) ([]byte, bool, error) {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM schedule_mutation_requests WHERE user_id = ? AND operation = ? AND idempotency_key = ? AND expires_at <= UTC_TIMESTAMP(3)", idBytes(userID), operation, key); err != nil {
+		return nil, false, err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO schedule_mutation_requests
+ (user_id, operation, idempotency_key, schedule_id, request_hash, expires_at)
+ VALUES (?, ?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 24 HOUR))`, idBytes(userID), operation, key, idBytes(scheduleID), requestHash[:])
+	if err == nil {
+		return nil, false, nil
+	}
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
+		return nil, false, err
+	}
+	var savedID, savedHash, response []byte
+	if err := tx.QueryRowContext(ctx, `SELECT schedule_id, request_hash, response_json FROM schedule_mutation_requests
+ WHERE user_id = ? AND operation = ? AND idempotency_key = ? FOR UPDATE`, idBytes(userID), operation, key).Scan(&savedID, &savedHash, &response); err != nil {
+		return nil, false, err
+	}
+	if !bytes.Equal(savedID, idBytes(scheduleID)) || !bytes.Equal(savedHash, requestHash[:]) {
+		return nil, false, ErrIdempotencyConflict
+	}
+	return response, true, nil
 }
 
 // BulkDeleteSchedules deletes only the ids owned by userID and reports how
@@ -258,7 +364,7 @@ func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID) erro
 // schedules.deleted.v1 event is published per id actually removed — the
 // caller-supplied id list may include ids that never belonged to this user,
 // which must not be reported as deleted.
-func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids []uuid.UUID) (int64, error) {
+func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids []uuid.UUID, key string, requestHash [32]byte) (int64, error) {
 	idList := make([][]byte, len(ids))
 	for i, id := range ids {
 		idList[i] = idBytes(id)
@@ -269,10 +375,39 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 		return 0, err
 	}
 	defer tx.Rollback()
+	if key != "" {
+		response, replay, err := claimScheduleMutation(ctx, tx, userID, uuid.Nil, "bulk-delete", key, requestHash)
+		if err != nil {
+			return 0, err
+		}
+		if replay {
+			var saved int64
+			if err := json.Unmarshal(response, &saved); err != nil {
+				return 0, err
+			}
+			return saved, nil
+		}
+	}
 	q := s.q.WithTx(tx)
 	owned, err := q.ListScheduleIDsByIDs(ctx, repo.ListScheduleIDsByIDsParams{UserID: idBytes(userID), Ids: idList})
 	if err != nil {
 		return 0, err
+	}
+	sort.Slice(owned, func(i, j int) bool { return bytes.Compare(owned[i], owned[j]) < 0 })
+	revisions := make(map[uuid.UUID]int64, len(owned))
+	for _, raw := range owned {
+		id, err := toUUID(raw)
+		if err != nil {
+			return 0, err
+		}
+		revision, err := lockScheduleRevision(ctx, tx, userID, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		revisions[id] = revision + 1
 	}
 
 	n, err := q.DeleteSchedulesByIDs(ctx, repo.DeleteSchedulesByIDsParams{UserID: idBytes(userID), Ids: idList})
@@ -289,13 +424,36 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 		if err != nil {
 			continue
 		}
-		if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt); err != nil {
+		revision, ok := revisions[id]
+		if !ok {
+			continue
+		}
+		if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt, revision); err != nil {
+			return 0, err
+		}
+	}
+	if key != "" {
+		response, err := json.Marshal(n)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE schedule_mutation_requests SET response_json = ? WHERE user_id = ? AND operation = 'bulk-delete' AND idempotency_key = ?", response, idBytes(userID), key); err != nil {
 			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	observability.ScheduleMutationsTotal.WithLabelValues("delete").Add(float64(n))
 	s.dispatchOutbox(ctx)
 	return n, nil
+}
+
+func lockScheduleRevision(ctx context.Context, tx *sql.Tx, userID, id uuid.UUID) (int64, error) {
+	var revision int64
+	err := tx.QueryRowContext(ctx, "SELECT revision FROM schedules WHERE id = ? AND user_id = ? FOR UPDATE", idBytes(id), idBytes(userID)).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return revision, err
 }

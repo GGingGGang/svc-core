@@ -15,12 +15,15 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/GGingGGang/svc-core/internal/observability"
 )
 
 // ErrMissingAPIKey is returned when neither the request's BYOK header nor
 // the server's GEMINI_API_KEY fallback supplied a key (../../PLAN.md §6:
 // "요청 헤더 X-Gemini-Key (BYOK) → env GEMINI_API_KEY").
 var ErrMissingAPIKey = errors.New("gemini: no api key provided")
+var ErrInvalidAPIKey = errors.New("gemini: invalid api key")
 
 // RateLimitedError is returned once a 429/5xx response survives the single
 // backoff-and-retry (./PLAN.md §6: "429/5xx 시 지수 backoff 1회 후 사용자에게
@@ -120,6 +123,10 @@ func (c *Client) Extract(ctx context.Context, overrideKey string, in ExtractInpu
 	if err == nil {
 		return result, nil
 	}
+	var upstream *upstreamStatusError
+	if errors.As(err, &upstream) && (upstream.status == http.StatusUnauthorized || upstream.status == http.StatusForbidden) {
+		return nil, ErrInvalidAPIKey
+	}
 	if !isRetryable(err) {
 		return nil, err
 	}
@@ -139,7 +146,6 @@ func (c *Client) Extract(ctx context.Context, overrideKey string, in ExtractInpu
 	}
 
 	retryAfter := defaultRetryAfter
-	var upstream *upstreamStatusError
 	if errors.As(err, &upstream) && upstream.retryAfter > 0 {
 		retryAfter = upstream.retryAfter
 	}
@@ -177,9 +183,11 @@ func (c *Client) attempt(ctx context.Context, key string, body []byte) (*Extract
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		observability.AIExternalRequestsTotal.WithLabelValues("transport_error").Inc()
 		return nil, fmt.Errorf("gemini: request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	observability.AIExternalRequestsTotal.WithLabelValues(strconv.Itoa(resp.StatusCode)).Inc()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -356,8 +364,8 @@ func parseCandidate(raw json.RawMessage) Candidate {
 			c.Issues = append(c.Issues, "invalid_end_at")
 		}
 	}
-	if c.StartAt != nil && c.EndAt != nil && c.EndAt.Before(*c.StartAt) {
-		c.Issues = append(c.Issues, "end_before_start")
+	if c.StartAt != nil && c.EndAt != nil && !c.EndAt.After(*c.StartAt) {
+		c.Issues = append(c.Issues, "end_not_after_start")
 	}
 	if model.NeedsConfirmation == nil || model.Issues == nil {
 		c.Issues = append(c.Issues, "missing_confirmation_signal")

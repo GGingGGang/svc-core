@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -48,11 +49,24 @@ func (c natsHeaderCarrier) Keys() []string {
 // ../../svc-core/PLAN.md §7 — a publish failure never fails the API request
 // that triggered it.
 type Publisher struct {
+	mu sync.RWMutex
 	js jetstream.JetStream
 }
 
 func NewPublisher(js jetstream.JetStream) *Publisher {
 	return &Publisher{js: js}
+}
+
+func (p *Publisher) SetJetStream(js jetstream.JetStream) {
+	p.mu.Lock()
+	p.js = js
+	p.mu.Unlock()
+}
+
+func (p *Publisher) jetStream() jetstream.JetStream {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.js
 }
 
 func (p *Publisher) PublishScheduleCreated(ctx context.Context, evt ScheduleEvent) error {
@@ -87,7 +101,7 @@ func (p *Publisher) PublishSerializedWithHeaders(ctx context.Context, subject, s
 // (../../PLAN.md §8.2); failures are also logged at ERROR level per
 // ../../svc-core/PLAN.md §7.
 func (p *Publisher) publish(ctx context.Context, subject, scheduleID string, occurredAt time.Time, payload any) error {
-	if p.js == nil {
+	if p.jetStream() == nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
 		err := fmt.Errorf("publish %s: nats not connected", subject)
 		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
@@ -104,7 +118,8 @@ func (p *Publisher) publish(ctx context.Context, subject, scheduleID string, occ
 }
 
 func (p *Publisher) publishData(ctx context.Context, subject, scheduleID string, occurredAt time.Time, data []byte, headers map[string]string) error {
-	if p.js == nil {
+	js := p.jetStream()
+	if js == nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
 		err := fmt.Errorf("publish %s: nats not connected", subject)
 		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
@@ -124,7 +139,7 @@ func (p *Publisher) publishData(ctx context.Context, subject, scheduleID string,
 
 	dedupID := fmt.Sprintf("%s:%s:%s", subject, scheduleID, occurredAt.UTC().Format(time.RFC3339Nano))
 
-	if _, err := p.js.PublishMsg(ctx, msg, jetstream.WithMsgID(dedupID)); err != nil {
+	if _, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(dedupID)); err != nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
 		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
 		return fmt.Errorf("publish %s: %w", subject, err)

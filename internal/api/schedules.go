@@ -1,9 +1,11 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,8 +55,8 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, message)
 		return
 	}
-	key := r.Header.Get("Idempotency-Key")
-	if len(key) > 128 || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n\t") {
+	key, validKey := idempotencyKey(r)
+	if !validKey {
 		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
 		return
 	}
@@ -188,6 +190,34 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	key, validKey := idempotencyKey(r)
+	if !validKey {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
+		return
+	}
+	canonical, err := json.Marshal(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	requestHash := sha256.Sum256(canonical)
+	replay, found, err := h.svc.ReplayScheduleUpdate(r.Context(), userID, id, key, requestHash)
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
+	if errors.Is(err, service.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load schedule retry")
+		return
+	}
+	if found {
+		writeJSON(w, http.StatusOK, toScheduleResponse(replay))
+		return
+	}
 
 	current, err := h.svc.GetSchedule(r.Context(), userID, id)
 	if errors.Is(err, service.ErrNotFound) {
@@ -275,7 +305,11 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.svc.UpdateSchedule(r.Context(), userID, id, fields)
+	updated, err := h.svc.UpdateSchedule(r.Context(), userID, id, fields, key, requestHash)
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
 		return
@@ -299,7 +333,16 @@ func (h *Handler) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.svc.DeleteSchedule(r.Context(), userID, id)
+	key, validKey := idempotencyKey(r)
+	if !validKey {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
+		return
+	}
+	err = h.svc.DeleteSchedule(r.Context(), userID, id, key)
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
 		return
@@ -309,6 +352,11 @@ func (h *Handler) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func idempotencyKey(r *http.Request) (string, bool) {
+	key := r.Header.Get("Idempotency-Key")
+	return key, len(key) <= 128 && strings.TrimSpace(key) == key && !strings.ContainsAny(key, "\r\n\t")
 }
 
 func (h *Handler) BulkDeleteSchedules(w http.ResponseWriter, r *http.Request) {
@@ -337,8 +385,25 @@ func (h *Handler) BulkDeleteSchedules(w http.ResponseWriter, r *http.Request) {
 		}
 		ids = append(ids, id)
 	}
+	key, validKey := idempotencyKey(r)
+	if !validKey {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
+		return
+	}
+	sortedIDs := append([]string(nil), req.IDs...)
+	sort.Strings(sortedIDs)
+	canonical, err := json.Marshal(sortedIDs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid ids")
+		return
+	}
+	requestHash := sha256.Sum256(canonical)
 
-	n, err := h.svc.BulkDeleteSchedules(r.Context(), userID, ids)
+	n, err := h.svc.BulkDeleteSchedules(r.Context(), userID, ids, key, requestHash)
+	if errors.Is(err, service.ErrIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to bulk delete schedules")
 		return

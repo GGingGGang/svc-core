@@ -13,7 +13,7 @@ WHERE user_id = ?
   AND start_at >= ?
   AND start_at < ?
   AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
-ORDER BY start_at ASC;
+ORDER BY start_at ASC, id ASC;
 
 -- name: UpdateSchedule :exec
 UPDATE schedules
@@ -23,7 +23,8 @@ SET title       = ?,
     start_at    = ?,
     end_at      = ?,
     all_day     = ?,
-    status      = ?
+    status      = ?,
+    revision    = revision + 1
 WHERE id = ? AND user_id = ?;
 
 -- name: DeleteSchedule :execrows

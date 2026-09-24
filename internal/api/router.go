@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -17,6 +18,7 @@ import (
 // fixture without touching this file.
 func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
+	r.Use(observability.WithRequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(observability.HTTPMetrics)
 	r.Get("/healthz", healthz)
@@ -29,7 +31,7 @@ func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Han
 
 		r.Post("/", h.CreateSchedule)
 		r.Get("/", h.ListSchedules)
-		r.Post("/extract", h.ExtractSchedules)
+		r.Post("/extract", http.TimeoutHandler(http.HandlerFunc(h.ExtractSchedules), 20*time.Second, `{"error":"extraction timed out"}`).ServeHTTP)
 		r.Post("/bulk-delete", h.BulkDeleteSchedules)
 
 		r.Route("/{id}", func(r chi.Router) {

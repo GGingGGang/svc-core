@@ -97,6 +97,7 @@ func mapSchedule(row *repo.Schedule, reminders []*repo.ScheduleReminder) (*Sched
 		ExtractionID: extractionID,
 		CreatedAt:    row.CreatedAt.UTC(),
 		UpdatedAt:    row.UpdatedAt.UTC(),
+		Revision:     row.Revision,
 	}
 	for _, r := range reminders {
 		rem, err := mapReminder(r)

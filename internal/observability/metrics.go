@@ -44,6 +44,21 @@ var (
 		Name: "domain_event_publish_failed_total",
 		Help: "Total schedule domain event publish attempts that failed, labeled by subject.",
 	}, []string{"subject"})
+
+	AIExternalRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ai_external_requests_total",
+		Help: "Gemini HTTP attempts, including automatic retries, by status.",
+	}, []string{"status"})
+
+	ScheduleMutationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "schedule_mutations_total",
+		Help: "Committed schedule creations, cancellation transitions, and deletions. Idempotency replays do not count.",
+	}, []string{"operation"})
+
+	AIExtractionRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_extraction_requests_total",
+		Help: "Admitted user extraction requests; automatic Gemini retries count once.",
+	})
 )
 
 // HTTPMetrics records the RED metrics (rate via *_total, errors via the

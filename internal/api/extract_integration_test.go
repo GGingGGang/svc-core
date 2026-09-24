@@ -214,3 +214,24 @@ func TestExtractIntegration_MissingKey(t *testing.T) {
 	require.JSONEq(t, `{"error":"ai_key_unavailable"}`, string(body))
 	require.Zero(t, geminiCalls)
 }
+
+func TestExtractIntegration_UserLimit(t *testing.T) {
+	var calls atomic.Int32
+	gemini := newGeminiStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write(geminiSuccessBody(t, "meeting"))
+	})
+	srv, jwks, db := setupServerWithPublisher(t, nil, ai.New(gemini.URL, "gemini-test", "key"))
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	request := map[string]any{"text": "meeting", "now": "2026-06-28T00:00:00Z", "timezone": "UTC"}
+	for i := 0; i < 5; i++ {
+		status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/extract", token, request)
+		require.Equal(t, http.StatusOK, status, string(body))
+	}
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/extract", token, request)
+	require.Equal(t, http.StatusTooManyRequests, status, string(body))
+	require.Equal(t, int32(5), calls.Load())
+	var admissions int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM ai_request_admissions").Scan(&admissions))
+	require.Equal(t, 5, admissions)
+}

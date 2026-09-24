@@ -52,6 +52,8 @@ func toScheduleEvent(sch *Schedule, occurredAt time.Time) events.ScheduleEvent {
 		EndAt:      sch.EndAt,
 		AllDay:     sch.AllDay,
 		Source:     sch.Source,
+		Status:     sch.Status,
+		Revision:   sch.Revision,
 		Reminders:  reminders,
 		OccurredAt: occurredAt,
 	}
@@ -65,7 +67,7 @@ func enqueueScheduleEvent(ctx context.Context, tx *sql.Tx, subject string, sch *
 	return outbox.Enqueue(ctx, tx, subject, sch.ID, occurredAt, toScheduleEvent(sch, occurredAt))
 }
 
-func enqueueDeletedEvent(ctx context.Context, tx *sql.Tx, scheduleID, userID uuid.UUID, occurredAt time.Time) error {
-	evt := events.ScheduleDeletedEvent{ScheduleID: scheduleID.String(), UserID: userID.String(), OccurredAt: occurredAt}
+func enqueueDeletedEvent(ctx context.Context, tx *sql.Tx, scheduleID, userID uuid.UUID, occurredAt time.Time, revision int64) error {
+	evt := events.ScheduleDeletedEvent{ScheduleID: scheduleID.String(), UserID: userID.String(), OccurredAt: occurredAt, Revision: revision}
 	return outbox.Enqueue(ctx, tx, events.SubjectScheduleDeleted, scheduleID, occurredAt, evt)
 }

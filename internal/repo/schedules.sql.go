@@ -213,7 +213,7 @@ func (q *Queries) ListScheduleIDsByIDs(ctx context.Context, arg ListScheduleIDsB
 }
 
 const getSchedule = `-- name: GetSchedule :one
-SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at FROM schedules
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision FROM schedules
 WHERE id = ? AND user_id = ?
 `
 
@@ -239,6 +239,7 @@ func (q *Queries) GetSchedule(ctx context.Context, arg GetScheduleParams) (*Sche
 		&i.ExtractionID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Revision,
 	)
 	return &i, err
 }
@@ -279,12 +280,12 @@ func (q *Queries) ListReminders(ctx context.Context, scheduleID []byte) ([]*Sche
 }
 
 const listSchedules = `-- name: ListSchedules :many
-SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at FROM schedules
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision FROM schedules
 WHERE user_id = ?
   AND start_at >= ?
   AND start_at < ?
   AND (? IS NULL OR status = ?)
-ORDER BY start_at ASC
+ORDER BY start_at ASC, id ASC
 `
 
 type ListSchedulesParams struct {
@@ -323,6 +324,7 @@ func (q *Queries) ListSchedules(ctx context.Context, arg ListSchedulesParams) ([
 			&i.ExtractionID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -345,7 +347,8 @@ SET title       = ?,
     start_at    = ?,
     end_at      = ?,
     all_day     = ?,
-    status      = ?
+    status      = ?,
+    revision    = revision + 1
 WHERE id = ? AND user_id = ?
 `
 

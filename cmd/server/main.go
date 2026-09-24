@@ -106,22 +106,30 @@ func main() {
 // while NATS is unreachable, and every publish attempt in that window fails
 // fast and is counted by domain_event_publish_failed_total.
 func setupEventPublisher(ctx context.Context, natsURL string) *events.Publisher {
-	nc, js, err := events.Connect(natsURL)
-	if err != nil {
-		log.Printf("nats connect failed, schedule events will not publish until reachable: %v", err)
-		return events.NewPublisher(nil)
-	}
-
-	streamCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := events.EnsureStream(streamCtx, js); err != nil {
-		log.Printf("ensure %s stream failed: %v", events.StreamName, err)
-	}
-
+	publisher := events.NewPublisher(nil)
 	go func() {
-		<-ctx.Done()
-		nc.Close()
+		for ctx.Err() == nil {
+			nc, js, err := events.Connect(natsURL)
+			if err == nil {
+				streamCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				err = events.EnsureStream(streamCtx, js)
+				cancel()
+				if err == nil {
+					publisher.SetJetStream(js)
+					<-ctx.Done()
+					publisher.SetJetStream(nil)
+					nc.Close()
+					return
+				}
+				nc.Close()
+			}
+			log.Printf("nats setup failed, retrying: %v", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
 	}()
-
-	return events.NewPublisher(js)
+	return publisher
 }

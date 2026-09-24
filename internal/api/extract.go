@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -54,15 +55,34 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, truncated, err := h.svc.ExtractSchedules(r.Context(), userID, service.ExtractInput{
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	candidates, truncated, err := h.svc.ExtractSchedules(ctx, userID, service.ExtractInput{
 		Text:     req.Text,
 		Now:      req.Now.UTC(),
 		Timezone: req.Timezone,
 		APIKey:   r.Header.Get("X-Gemini-Key"),
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrExtractBusy) {
+			writeError(w, http.StatusTooManyRequests, "extraction already in progress")
+			return
+		}
+		if errors.Is(err, service.ErrExtractUserRateLimited) {
+			w.Header().Set("Retry-After", "60")
+			writeError(w, http.StatusTooManyRequests, "extraction request limit reached")
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, "extraction timed out")
+			return
+		}
 		if errors.Is(err, service.ErrExtractKeyUnavailable) {
 			writeError(w, http.StatusBadGateway, "ai_key_unavailable")
+			return
+		}
+		if errors.Is(err, service.ErrExtractInvalidKey) {
+			writeError(w, http.StatusBadGateway, "ai_key_invalid")
 			return
 		}
 		var rl *service.ExtractRateLimitedError

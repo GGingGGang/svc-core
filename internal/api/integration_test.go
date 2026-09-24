@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,7 +157,7 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 		tcmysql.WithDatabase("core"),
 		tcmysql.WithUsername("core_test"),
 		tcmysql.WithPassword("core_test"),
-		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql"),
+		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql"),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -433,6 +434,44 @@ func TestSchedulesIntegration(t *testing.T) {
 	})
 }
 
+func TestScheduleEventRevisions(t *testing.T) {
+	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{
+		"title": "meeting", "start_at": "2026-08-01T06:00:00Z",
+	})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var created scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &created))
+	status, body = doRequest(t, srv.Client(), http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"status": "cancelled"})
+	require.Equal(t, http.StatusOK, status, string(body))
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10, "channel": "email"})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var reminder reminderJSON
+	require.NoError(t, json.Unmarshal(body, &reminder))
+	status, body = doRequest(t, srv.Client(), http.MethodDelete, srv.URL+"/schedules/"+created.ID+"/reminders/"+reminder.ID, token, nil)
+	require.Equal(t, http.StatusNoContent, status, string(body))
+	status, body = doRequest(t, srv.Client(), http.MethodDelete, srv.URL+"/schedules/"+created.ID, token, nil)
+	require.Equal(t, http.StatusNoContent, status, string(body))
+	id := uuid.MustParse(created.ID)
+	rows, err := db.Query("SELECT payload FROM event_outbox WHERE schedule_id = ?", id[:])
+	require.NoError(t, err)
+	defer rows.Close()
+	revisions := map[int64]string{}
+	for rows.Next() {
+		var payload []byte
+		require.NoError(t, rows.Scan(&payload))
+		var event struct {
+			Revision int64  `json:"revision"`
+			Status   string `json:"status"`
+		}
+		require.NoError(t, json.Unmarshal(payload, &event))
+		revisions[event.Revision] = event.Status
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, map[int64]string{1: "confirmed", 2: "cancelled", 3: "cancelled", 4: "cancelled", 5: ""}, revisions)
+}
+
 func TestCreateScheduleIdempotency(t *testing.T) {
 	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
 	user := jwks.mint(t, uuid.New().String(), time.Hour)
@@ -477,14 +516,123 @@ func TestCreateScheduleIdempotency(t *testing.T) {
 	status, _ = doRequest(t, srv.Client(), http.MethodDelete, srv.URL+"/schedules/"+first.ID, user, nil)
 	require.Equal(t, http.StatusNoContent, status)
 	status, replay = post(user, body)
-	require.Equal(t, http.StatusCreated, status)
-	require.Equal(t, first, replay, "a deleted schedule must not be recreated by a retry")
+	require.Equal(t, http.StatusConflict, status)
+	require.Empty(t, replay.ID, "a deleted schedule must not be returned as a live result")
 
 	_, err := db.Exec("UPDATE schedule_create_requests SET expires_at = UTC_TIMESTAMP(3) - INTERVAL 1 SECOND WHERE idempotency_key = ?", key)
 	require.NoError(t, err)
 	status, afterExpiry := post(user, body)
 	require.Equal(t, http.StatusCreated, status)
 	require.NotEqual(t, first.ID, afterExpiry.ID, "an expired key may start a new save")
+}
+
+func TestUpdateDeleteIdempotency(t *testing.T) {
+	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "meeting", "start_at": "2026-10-01T09:00:00Z"})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var created scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &created))
+	send := func(method, id, key, payload string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(method, srv.URL+"/schedules/"+id, strings.NewReader(payload))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Idempotency-Key", key)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, body
+	}
+	status, first := send(http.MethodPatch, created.ID, "update-key", `{"title":"changed"}`)
+	require.Equal(t, http.StatusOK, status, string(first))
+	status, _ = send(http.MethodPatch, created.ID, "", `{"status":"tentative"}`)
+	require.Equal(t, http.StatusOK, status)
+	status, replay := send(http.MethodPatch, created.ID, "update-key", `{"title":"changed"}`)
+	require.Equal(t, http.StatusOK, status, string(replay))
+	require.JSONEq(t, string(first), string(replay))
+	status, _ = send(http.MethodPatch, created.ID, "update-key", `{"title":"different"}`)
+	require.Equal(t, http.StatusConflict, status)
+	status, _ = send(http.MethodDelete, created.ID, "delete-key", "")
+	require.Equal(t, http.StatusNoContent, status)
+	status, _ = send(http.MethodDelete, created.ID, "delete-key", "")
+	require.Equal(t, http.StatusNoContent, status)
+	status, _ = send(http.MethodDelete, uuid.NewString(), "delete-key", "")
+	require.Equal(t, http.StatusConflict, status)
+	var events int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM event_outbox").Scan(&events))
+	require.Equal(t, 4, events, "the keyed retry must not emit another event")
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "bulk target", "start_at": "2026-10-02T09:00:00Z"})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var bulkTarget scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &bulkTarget))
+	bulk := func(ids []string) (int, []byte) {
+		t.Helper()
+		payload, err := json.Marshal(map[string]any{"ids": ids})
+		require.NoError(t, err)
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules/bulk-delete", bytes.NewReader(payload))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Idempotency-Key", "bulk-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, body
+	}
+	status, first = bulk([]string{bulkTarget.ID})
+	require.Equal(t, http.StatusOK, status, string(first))
+	status, replay = bulk([]string{bulkTarget.ID})
+	require.Equal(t, http.StatusOK, status, string(replay))
+	require.JSONEq(t, string(first), string(replay))
+	status, _ = bulk([]string{created.ID})
+	require.Equal(t, http.StatusConflict, status)
+}
+
+func TestReminderIdempotency(t *testing.T) {
+	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "meeting", "start_at": "2026-10-01T09:00:00Z"})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var schedule scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &schedule))
+	call := func(method, suffix, key, payload string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(method, srv.URL+"/schedules/"+schedule.ID+"/reminders"+suffix, strings.NewReader(payload))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Idempotency-Key", key)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, body
+	}
+	status, first := call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"email"}`)
+	require.Equal(t, http.StatusCreated, status, string(first))
+	status, replay := call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"email"}`)
+	require.Equal(t, http.StatusCreated, status, string(replay))
+	require.JSONEq(t, string(first), string(replay))
+	status, _ = call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":20,"channel":"email"}`)
+	require.Equal(t, http.StatusConflict, status)
+	var added reminderJSON
+	require.NoError(t, json.Unmarshal(first, &added))
+	status, _ = call(http.MethodDelete, "/"+added.ID, "reminder-delete-key", "")
+	require.Equal(t, http.StatusNoContent, status)
+	status, _ = call(http.MethodDelete, "/"+added.ID, "reminder-delete-key", "")
+	require.Equal(t, http.StatusNoContent, status)
+	status, _ = call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"email"}`)
+	require.Equal(t, http.StatusConflict, status, "deleted reminder must not appear as live")
+	var events int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM event_outbox").Scan(&events))
+	require.Equal(t, 3, events, "create, one reminder add and one reminder delete")
 }
 
 func TestCreateScheduleRollsBackFailedReminder(t *testing.T) {

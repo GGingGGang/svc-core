@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/GGingGGang/svc-core/internal/events"
+	"github.com/GGingGGang/svc-core/internal/observability"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -48,6 +49,9 @@ func Enqueue(ctx context.Context, tx *sql.Tx, subject string, scheduleID uuid.UU
 	}
 	headers := propagation.MapCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, headers)
+	if requestID := observability.RequestID(ctx); requestID != "" {
+		headers["x-request-id"] = requestID
+	}
 	headerData, err := json.Marshal(headers)
 	if err != nil {
 		return fmt.Errorf("marshal outbox headers: %w", err)

@@ -49,6 +49,10 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if message := scheduleInputError(req.Description, req.Location, req.StartAt, req.EndAt); message != "" {
+		writeError(w, http.StatusBadRequest, message)
+		return
+	}
 	key := r.Header.Get("Idempotency-Key")
 	if len(key) > 128 || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n\t") {
 		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
@@ -265,6 +269,10 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fields.Status = *p
+	}
+	if message := scheduleInputError(fields.Description, fields.Location, fields.StartAt, fields.EndAt); message != "" {
+		writeError(w, http.StatusBadRequest, message)
+		return
 	}
 
 	updated, err := h.svc.UpdateSchedule(r.Context(), userID, id, fields)

@@ -486,3 +486,30 @@ func TestCreateScheduleIdempotency(t *testing.T) {
 	require.Equal(t, http.StatusCreated, status)
 	require.NotEqual(t, first.ID, afterExpiry.ID, "an expired key may start a new save")
 }
+
+func TestCreateScheduleRollsBackFailedReminder(t *testing.T) {
+	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	user := jwks.mint(t, uuid.New().String(), time.Hour)
+	_, err := db.Exec(`CREATE TRIGGER fail_second_reminder BEFORE INSERT ON schedule_reminders
+		FOR EACH ROW BEGIN
+			IF NEW.minutes_before = 20 THEN
+				SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test reminder failure';
+			END IF;
+		END`)
+	require.NoError(t, err)
+
+	payload := map[string]any{
+		"title": "atomic save", "start_at": "2026-10-01T09:00:00Z",
+		"reminders": []map[string]any{
+			{"minutes_before": 10, "channel": "push"},
+			{"minutes_before": 20, "channel": "push"},
+		},
+	}
+	status, _ := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", user, payload)
+	require.Equal(t, http.StatusInternalServerError, status)
+	for _, table := range []string{"schedules", "schedule_reminders", "event_outbox", "schedule_create_requests"} {
+		var count int
+		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM "+table).Scan(&count))
+		require.Zero(t, count, table+" must roll back with the failed reminder")
+	}
+}

@@ -18,6 +18,20 @@ func normalizeTitle(title string) (string, bool) {
 	return title, title != "" && utf8.RuneCountInString(title) <= 255
 }
 
+func scheduleInputError(description, location *string, start time.Time, end *time.Time) string {
+	if description != nil && utf8.RuneCountInString(*description) > 10000 {
+		return "description must contain at most 10000 characters"
+	}
+	if location != nil && utf8.RuneCountInString(*location) > 255 {
+		return "location must contain at most 255 characters"
+	}
+	// DATETIME(3) stores milliseconds; a smaller gap can become equal on write.
+	if end != nil && end.Sub(start) < time.Millisecond {
+		return "end_at must be at least 1ms after start_at"
+	}
+	return ""
+}
+
 type reminderRequest struct {
 	// no "required" here: 0 (remind exactly at start_at) is a valid value
 	// and validator's required treats the zero value as absent.

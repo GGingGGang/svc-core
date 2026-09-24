@@ -503,7 +503,7 @@ components:
       description: >-
         Authorization: Bearer <access-token>. The token is a JWT (ES256)
         issued by the auth service and verified locally against its published
-        JWKS (../PLAN.md §4 — no introspection call). The authenticated
+        JWKS, then checked for active account status by Auth. The authenticated
         user id always comes from the token's `sub` claim; it is never
         accepted from a request body or path parameter.
 

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,15 +21,19 @@ type contextKey int
 
 const userIDContextKey contextKey = iota
 
+var errJWKSUnavailable = errors.New("jwks unavailable")
+
 // JWTAuth verifies bearer access tokens against the issuer's JWKS, per
 // ../PLAN.md §4.3: signature verification is local (the introspection
-// endpoint is retired), and the authenticated user id always comes from the
+// endpoint confirms the account is still active), and the user id comes from the
 // token's `sub` claim — never from a request body or path parameter.
 type JWTAuth struct {
-	cache    *jwk.Cache
-	jwksURL  string
-	issuer   string
-	audience string
+	cache         *jwk.Cache
+	jwksURL       string
+	introspectURL string
+	client        *http.Client
+	issuer        string
+	audience      string
 }
 
 // NewJWTAuth registers jwksURL with an in-memory jwk.Cache. The cache
@@ -36,17 +42,22 @@ type JWTAuth struct {
 // cannot turn every request into a refetch. Registration does not fetch the
 // JWKS synchronously, so a not-yet-reachable auth service does not block
 // this service's own startup (/healthz, /readyz stay up); the first request
-// that needs a key triggers the initial fetch.
-func NewJWTAuth(jwksURL, issuer, audience string) (*JWTAuth, error) {
+// that needs a key triggers the initial fetch. introspectURL is the internal
+// Auth endpoint queried for current account status after local verification.
+func NewJWTAuth(jwksURL, introspectURL, issuer, audience string) (*JWTAuth, error) {
+	parsed, err := url.Parse(introspectURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, errors.New("invalid auth introspection URL")
+	}
 	cache := jwk.NewCache(context.Background())
 	if err := cache.Register(jwksURL, jwk.WithMinRefreshInterval(15*time.Minute)); err != nil {
 		return nil, err
 	}
-	return &JWTAuth{cache: cache, jwksURL: jwksURL, issuer: issuer, audience: audience}, nil
+	return &JWTAuth{cache: cache, jwksURL: jwksURL, introspectURL: introspectURL, client: &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, issuer: issuer, audience: audience}, nil
 }
 
-// Middleware rejects requests without a valid Bearer JWT with 401, and
-// otherwise injects the token's `sub` (parsed as a UUID) into the request
+// Middleware rejects invalid or inactive Bearer JWTs with 401, fails closed
+// with 503 when Auth cannot verify current status, and injects `sub` as a UUID
 // context for handlers to read via UserID.
 func (a *JWTAuth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +67,15 @@ func (a *JWTAuth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		token, err := a.verify(r.Context(), []byte(raw))
+		verifyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		token, err := a.verify(verifyCtx, []byte(raw))
+		verifyErr := verifyCtx.Err()
+		cancel()
 		if err != nil {
+			if errors.Is(err, errJWKSUnavailable) || verifyErr != nil {
+				unavailable(w)
+				return
+			}
 			unauthorized(w)
 			return
 		}
@@ -67,10 +85,46 @@ func (a *JWTAuth) Middleware(next http.Handler) http.Handler {
 			unauthorized(w)
 			return
 		}
+		active, err := a.active(r.Context(), raw)
+		if err != nil {
+			unavailable(w)
+			return
+		}
+		if !active {
+			unauthorized(w)
+			return
+		}
 
 		ctx := context.WithValue(r.Context(), userIDContextKey, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (a *JWTAuth) active(ctx context.Context, raw string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.introspectURL, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+raw)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return false, nil
+	case http.StatusOK:
+		var body struct {
+			Active bool `json:"active"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			return false, err
+		}
+		return body.Active, nil
+	default:
+		return false, errors.New("auth introspection unavailable")
+	}
 }
 
 func bearerToken(r *http.Request) string {
@@ -95,11 +149,11 @@ func (a *JWTAuth) verify(ctx context.Context, raw []byte) (jwt.Token, error) {
 
 	set, err := a.cache.Get(ctx, a.jwksURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errJWKSUnavailable, err)
 	}
 	if _, ok := set.LookupKeyID(kid); !ok {
 		if set, err = a.cache.Refresh(ctx, a.jwksURL); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %v", errJWKSUnavailable, err)
 		}
 	}
 
@@ -127,6 +181,12 @@ func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+}
+
+func unavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "auth unavailable"})
 }
 
 // UserID returns the authenticated user id placed in the context by the

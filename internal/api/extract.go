@@ -19,6 +19,7 @@ import (
 const maxExtractTextChars = 10000
 const maxExtractTextBytes = 64 << 10
 const maxExtractBodyBytes = 128 << 10
+const extractProcessingTimeout = 15 * time.Second
 
 func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 	userID, ok := authmw.UserID(r.Context())
@@ -55,7 +56,7 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), extractProcessingTimeout)
 	defer cancel()
 	candidates, truncated, err := h.svc.ExtractSchedules(ctx, userID, service.ExtractInput{
 		Text:     req.Text,

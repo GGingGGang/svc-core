@@ -57,7 +57,7 @@ func main() {
 		log.Fatalf("database readiness: %v", err)
 	}
 
-	jwtAuth, err := authmw.NewJWTAuth(cfg.JWKSURL, cfg.JWTIssuer, cfg.JWTAudience)
+	jwtAuth, err := authmw.NewJWTAuth(cfg.JWKSURL, cfg.AuthIntrospectURL, cfg.JWTIssuer, cfg.JWTAudience)
 	if err != nil {
 		log.Fatalf("setup jwt auth: %v", err)
 	}

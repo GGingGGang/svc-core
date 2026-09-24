@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,9 +69,10 @@ type scheduleJSON struct {
 // httptest server, standing in for the auth service's real
 // /.well-known/jwks.json for the duration of a test.
 type jwksFixture struct {
-	server  *httptest.Server
-	url     string
-	private jwk.Key
+	server              *httptest.Server
+	url                 string
+	private             jwk.Key
+	introspectionStatus *atomic.Int32
 }
 
 func newJWKSFixture(t *testing.T) *jwksFixture {
@@ -93,14 +95,28 @@ func newJWKSFixture(t *testing.T) *jwksFixture {
 	require.NoError(t, set.AddKey(pub))
 
 	mux := http.NewServeMux()
+	introspectionStatus := new(atomic.Int32)
+	introspectionStatus.Store(http.StatusOK)
 	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(set))
 	})
+	mux.HandleFunc("/introspect", func(w http.ResponseWriter, r *http.Request) {
+		if status := int(introspectionStatus.Load()); status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":true}`))
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	return &jwksFixture{server: srv, url: srv.URL + "/.well-known/jwks.json", private: priv}
+	return &jwksFixture{server: srv, url: srv.URL + "/.well-known/jwks.json", private: priv, introspectionStatus: introspectionStatus}
 }
 
 // mint signs an access token for subject (the user id) using the fixture's
@@ -176,7 +192,7 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 	}, 30*time.Second, 500*time.Millisecond, "db should become reachable")
 
 	jwks := newJWKSFixture(t)
-	jwtAuth, err := authmw.NewJWTAuth(jwks.url, testIssuer, testAudience)
+	jwtAuth, err := authmw.NewJWTAuth(jwks.url, jwks.server.URL+"/introspect", testIssuer, testAudience)
 	require.NoError(t, err)
 
 	coreService := service.New(db, pub, aiClnt)
@@ -431,6 +447,16 @@ func TestSchedulesIntegration(t *testing.T) {
 
 		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", wrongIss, nil)
 		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("current account status is checked after JWT verification", func(t *testing.T) {
+		jwks.introspectionStatus.Store(http.StatusUnauthorized)
+		status, _ := doRequest(t, client, http.MethodGet, srv.URL+"/schedules", userA, nil)
+		require.Equal(t, http.StatusUnauthorized, status)
+		jwks.introspectionStatus.Store(http.StatusServiceUnavailable)
+		status, _ = doRequest(t, client, http.MethodGet, srv.URL+"/schedules", userA, nil)
+		require.Equal(t, http.StatusServiceUnavailable, status)
+		jwks.introspectionStatus.Store(http.StatusOK)
 	})
 }
 

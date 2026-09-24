@@ -28,6 +28,7 @@ DB_PASSWORD=         # required, no default — never commit
 DB_NAME=             # required
 DB_TLS=true          # default true (HeatWave requires TLS); set false for local/testcontainers MySQL
 JWKS_URL=http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json  # default shown; in-cluster auth JWKS endpoint
+AUTH_INTROSPECT_URL=http://auth.auth.svc.cluster.local:3000/introspect  # default shown; active-account check for every authenticated request
 JWT_ISSUER=          # required, no default (environment-specific, e.g. auth.example.com)
 JWT_AUDIENCE=core    # default core, matches the fixed contract value
 NATS_URL=nats://nats.data.svc.cluster.local:4222  # default shown; in-cluster JetStream broker
@@ -42,6 +43,8 @@ Auth: every `/schedules*` request requires `Authorization: Bearer <access-token>
 service, verified locally against its JWKS (in-memory cache, lazy refresh on an unknown `kid`). `iss` and `aud` are
 checked against `JWT_ISSUER`/`JWT_AUDIENCE`. The authenticated user id always comes from the token's `sub` claim —
 never from a request body or path parameter. Requests without a valid token get 401.
+
+After local JWT verification, Core checks `AUTH_INTROSPECT_URL` with the same bearer token (2-second timeout). An inactive account gets 401; Auth failures return 503 before any schedule handler runs.
 
 ## Database
 

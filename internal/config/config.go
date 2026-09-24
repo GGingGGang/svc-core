@@ -27,9 +27,10 @@ type Config struct {
 	// contract value from ../PLAN.md §4.1. JWTIssuer has no default because
 	// it is environment-specific (`auth.${DOMAIN}`) and must be set
 	// explicitly per deployment.
-	JWKSURL     string `env:"JWKS_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json"`
-	JWTIssuer   string `env:"JWT_ISSUER,required"`
-	JWTAudience string `env:"JWT_AUDIENCE" envDefault:"core"`
+	JWKSURL           string `env:"JWKS_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json"`
+	AuthIntrospectURL string `env:"AUTH_INTROSPECT_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/introspect"`
+	JWTIssuer         string `env:"JWT_ISSUER,required"`
+	JWTAudience       string `env:"JWT_AUDIENCE" envDefault:"core"`
 
 	// NATSURL is the JetStream broker this service publishes schedule
 	// domain events to (../PLAN.md §3/§7). Defaults to the in-cluster DNS

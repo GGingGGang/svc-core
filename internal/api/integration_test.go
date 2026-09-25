@@ -664,12 +664,7 @@ func TestReminderIdempotency(t *testing.T) {
 func TestCreateScheduleRollsBackFailedReminder(t *testing.T) {
 	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
 	user := jwks.mint(t, uuid.New().String(), time.Hour)
-	_, err := db.Exec(`CREATE TRIGGER fail_second_reminder BEFORE INSERT ON schedule_reminders
-		FOR EACH ROW BEGIN
-			IF NEW.minutes_before = 20 THEN
-				SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test reminder failure';
-			END IF;
-		END`)
+	_, err := db.Exec(`ALTER TABLE schedule_reminders ADD CONSTRAINT fail_second_reminder CHECK (minutes_before <> 20)`)
 	require.NoError(t, err)
 
 	payload := map[string]any{

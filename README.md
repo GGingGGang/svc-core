@@ -149,14 +149,15 @@ on `/metrics`.
 
 `internal/ai/gemini_test.go` is a DB-free unit suite covering the Gemini client in isolation against a local
 `httptest` stub: BYOK header takes priority over the server fallback key, no key at all fails fast without an
-HTTP call, a 429/5xx is retried exactly once and then either succeeds or turns into `RateLimitedError` carrying
-the upstream's `Retry-After`, and a non-retryable status (e.g. 400) fails immediately without a retry.
+HTTP call, a 429/5xx is retried exactly once; a persistent 429 returns `RateLimitedError` with
+the upstream's `Retry-After`, while a persistent 5xx returns `ErrUpstreamUnavailable`. A non-retryable
+status (e.g. 400) fails immediately without a retry.
 
 `internal/api/extract_integration_test.go` boots a real MySQL container and drives `POST /schedules/extract`
 through the full HTTP/service stack against a local Gemini stub (never the real API): a happy-path call returns
 candidates and persists a `success` `ai_extractions` row, text over 10000 Unicode characters is rejected with `413` before the
-stub is ever called, an invalid `timezone` is `400`, and a stub stuck on `429` surfaces as `429` +
-`Retry-After` to the caller with a `failed` audit row recorded.
+stub is ever called, an invalid `timezone` is `400`, a stub stuck on `429` surfaces as `429` +
+`Retry-After`, and a stub stuck on 5xx surfaces as `503 ai_upstream_unavailable`.
 
 All of the above are gated behind a build tag so CI without a Docker daemon still passes `go test ./...`:
 
@@ -215,8 +216,8 @@ POSTing it to `/schedules` with `source=ai` separately.
 - **Structured output**: the Gemini request sets `responseSchema` so the model's JSON output matches the `candidates` shape directly — no separate
   parsing/mapping step for the happy path.
 - **Limits**: blank `text` → `400`; over 10000 Unicode characters or 64KiB UTF-8 → `413` before any Gemini call. Each Gemini HTTP attempt has a 10s timeout. A `429`/5xx response is retried exactly
-  once after a fixed backoff; if the retry also fails, the caller gets `429` with a `Retry-After` header (taken from Gemini's own `Retry-After` when
-  present, otherwise a fixed default).
+  once after a fixed backoff. A persistent `429` returns `429` with `Retry-After` (from Gemini when present, otherwise a fixed default);
+  a persistent 5xx returns `503 ai_upstream_unavailable`.
 - **Audit trail**: every call — success, or failure for any reason (missing key, upstream error, malformed response) — writes exactly one `ai_extractions`
   row (`status` success/partial/failed, `latency_ms`, `raw_text`). The insert itself is best-effort: a DB error there is logged, not surfaced, since the
   caller's actual request already ran to completion by that point.

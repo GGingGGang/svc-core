@@ -101,6 +101,7 @@ type ExtractRateLimitedError struct {
 var ErrExtractBusy = errors.New("extract: another request is in progress")
 var ErrExtractUserRateLimited = errors.New("extract: user request limit reached")
 var ErrExtractInvalidKey = errors.New("extract: invalid api key")
+var ErrExtractUpstreamUnavailable = errors.New("extract: upstream unavailable")
 
 func (e *ExtractRateLimitedError) Error() string {
 	return "extract: gemini rate limited"

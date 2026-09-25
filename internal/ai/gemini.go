@@ -24,10 +24,10 @@ import (
 // "요청 헤더 X-Gemini-Key (BYOK) → env GEMINI_API_KEY").
 var ErrMissingAPIKey = errors.New("gemini: no api key provided")
 var ErrInvalidAPIKey = errors.New("gemini: invalid api key")
+var ErrUpstreamUnavailable = errors.New("gemini: upstream unavailable")
 
-// RateLimitedError is returned once a 429/5xx response survives the single
-// backoff-and-retry (./PLAN.md §6: "429/5xx 시 지수 backoff 1회 후 사용자에게
-// 429 + Retry-After"). RetryAfter is always populated (falling back to a
+// RateLimitedError is returned when a 429 survives one retry. A 5xx after
+// retry is ErrUpstreamUnavailable instead. RetryAfter is always populated (falling back to a
 // fixed default when Gemini's response didn't include one) so callers can
 // set the client-facing Retry-After header directly.
 type RateLimitedError struct {
@@ -147,6 +147,9 @@ func (c *Client) Extract(ctx context.Context, overrideKey string, in ExtractInpu
 	if !isRetryable(err) {
 		return nil, err
 	}
+	if errors.As(err, &upstream) && upstream.status >= 500 {
+		return nil, ErrUpstreamUnavailable
+	}
 
 	retryAfter := defaultRetryAfter
 	if errors.As(err, &upstream) && upstream.retryAfter > 0 {
@@ -156,8 +159,7 @@ func (c *Client) Extract(ctx context.Context, overrideKey string, in ExtractInpu
 }
 
 // upstreamStatusError is the internal sentinel used to decide retry
-// eligibility (429/5xx) before it is either retried or turned into a
-// RateLimitedError for the caller.
+// eligibility (429/5xx) before it is retried and classified for the caller.
 type upstreamStatusError struct {
 	status     int
 	retryAfter time.Duration

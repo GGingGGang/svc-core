@@ -86,6 +86,10 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "ai_key_invalid")
 			return
 		}
+		if errors.Is(err, service.ErrExtractUpstreamUnavailable) {
+			writeError(w, http.StatusServiceUnavailable, "ai_upstream_unavailable")
+			return
+		}
 		var rl *service.ExtractRateLimitedError
 		if errors.As(err, &rl) {
 			w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter.Seconds())))

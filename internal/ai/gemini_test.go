@@ -209,7 +209,7 @@ func TestExtract_RateLimitedAfterRetryExhausted(t *testing.T) {
 	require.Equal(t, int32(2), atomic.LoadInt32(&attempts), "exactly one retry, not unbounded")
 }
 
-func TestExtract_5xxIsRetriedSameAsRateLimit(t *testing.T) {
+func TestExtract_5xxIsRetriedThenClassifiedUnavailable(t *testing.T) {
 	var attempts int32
 	srv := stubGeminiServer(t, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -219,8 +219,7 @@ func TestExtract_5xxIsRetriedSameAsRateLimit(t *testing.T) {
 	c := ai.New(srv.URL, "gemini-test", "key")
 	_, err := c.Extract(context.Background(), "", ai.ExtractInput{Text: "x", Now: time.Now(), Timezone: "UTC"})
 
-	var rl *ai.RateLimitedError
-	require.ErrorAs(t, err, &rl)
+	require.ErrorIs(t, err, ai.ErrUpstreamUnavailable)
 	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
 }
 

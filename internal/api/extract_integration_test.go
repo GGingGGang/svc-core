@@ -214,6 +214,22 @@ func TestExtractIntegration_RateLimited(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "a failed extraction must still be recorded")
 }
 
+func TestExtractIntegration_UpstreamUnavailable(t *testing.T) {
+	var calls atomic.Int32
+	gemini := newGeminiStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	srv, jwks, _ := setupServerWithPublisher(t, nil, ai.New(gemini.URL, "gemini-test", "server-key"))
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/extract", token, map[string]any{
+		"text": "meeting tomorrow", "now": "2026-06-28T00:00:00Z", "timezone": "UTC",
+	})
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.JSONEq(t, `{"error":"ai_upstream_unavailable"}`, string(body))
+	require.Equal(t, int32(2), calls.Load())
+}
+
 func TestExtractIntegration_MissingKey(t *testing.T) {
 	geminiCalls := 0
 	gemini := newGeminiStub(t, func(http.ResponseWriter, *http.Request) { geminiCalls++ })

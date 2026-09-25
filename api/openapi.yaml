@@ -201,6 +201,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: Gemini upstream remains unavailable after one retry; error is ai_upstream_unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /schedules:
     post:

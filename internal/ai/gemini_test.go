@@ -154,6 +154,20 @@ func TestExtract_InvalidAPIKey(t *testing.T) {
 	require.ErrorIs(t, err, ai.ErrInvalidAPIKey)
 }
 
+func TestExtract_RetryInvalidAPIKey(t *testing.T) {
+	var attempts int32
+	srv := stubGeminiServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	})
+	_, err := ai.New(srv.URL, "gemini-test", "bad-key").Extract(context.Background(), "", ai.ExtractInput{Text: "meeting", Now: time.Now(), Timezone: "UTC"})
+	require.ErrorIs(t, err, ai.ErrInvalidAPIKey)
+	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
+}
+
 // TestExtract_RetriesOnceThenSucceeds covers the 429-then-recover half of
 // ../../PLAN.md §6's "429/5xx 시 지수 backoff 1회 후 재시도" contract.
 func TestExtract_RetriesOnceThenSucceeds(t *testing.T) {

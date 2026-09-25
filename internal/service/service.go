@@ -44,6 +44,21 @@ func New(db *sql.DB, pub *events.Publisher, aiClnt *ai.Client) *Service {
 // NATS. It is owned by the process lifecycle, not an HTTP request.
 func (s *Service) RunOutbox(ctx context.Context) { s.outbox.Run(ctx) }
 
+// FollowupAvailable means the NATS handoff path has no known delay. It does
+// not mean Batch has processed an event or that a reminder was sent.
+func (s *Service) FollowupAvailable(ctx context.Context) (bool, error) {
+	if s.pub == nil || !s.pub.Connected() {
+		return false, nil
+	}
+	var delayed bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM event_outbox
+ WHERE published_at IS NULL AND created_at <= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 5 SECOND))`).Scan(&delayed)
+	if err != nil {
+		return false, err
+	}
+	return !delayed, nil
+}
+
 func (s *Service) dispatchOutbox(ctx context.Context) {
 	if _, err := s.outbox.DispatchOnce(ctx); err != nil {
 		// The durable row remains available for the background worker.

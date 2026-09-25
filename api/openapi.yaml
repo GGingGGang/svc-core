@@ -69,6 +69,30 @@ paths:
                     type: string
                     example: not ready
 
+  /status:
+    get:
+      tags: [Health]
+      summary: Schedule and followup handoff availability
+      description: >-
+        The followup field describes the NATS handoff path only. Available does
+        not mean Batch processing completed or a reminder was sent. A publisher
+        disconnect or an outbox event unpublished for more than five seconds
+        reports delayed. No personal data or backlog counts are returned.
+      security: []
+      responses:
+        "200":
+          description: schedule storage is available; followup may be delayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatus'
+        "503":
+          description: schedule storage or required database structure is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatus'
+
   /metrics:
     get:
       tags: [Health]
@@ -551,6 +575,16 @@ components:
             $ref: "#/components/schemas/Error"
 
   schemas:
+    ServiceStatus:
+      type: object
+      required: [schedules, followup]
+      properties:
+        schedules:
+          type: string
+          enum: [available, unavailable]
+        followup:
+          type: string
+          enum: [available, delayed]
     Error:
       type: object
       properties:

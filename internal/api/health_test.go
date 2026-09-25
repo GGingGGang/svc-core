@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestReadyzRequiresDatabaseCheck(t *testing.T) {
@@ -39,5 +41,28 @@ func TestHealthzDoesNotRequireDatabase(t *testing.T) {
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestStatusSeparatesStorageAndFollowup(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		readiness func(context.Context) error
+		followup  func(context.Context) (bool, error)
+		code      int
+		body      string
+	}{
+		{"ready", func(context.Context) error { return nil }, func(context.Context) (bool, error) { return true, nil }, 200, `{"schedules":"available","followup":"available"}`},
+		{"handoff delayed", func(context.Context) error { return nil }, func(context.Context) (bool, error) { return false, nil }, 200, `{"schedules":"available","followup":"delayed"}`},
+		{"handoff check failed", func(context.Context) error { return nil }, func(context.Context) (bool, error) { return false, errors.New("db error") }, 200, `{"schedules":"available","followup":"delayed"}`},
+		{"storage unavailable", func(context.Context) error { return errors.New("db error") }, nil, 503, `{"schedules":"unavailable","followup":"delayed"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Handler{readiness: tc.readiness, followup: tc.followup}
+			w := httptest.NewRecorder()
+			h.status(w, httptest.NewRequest(http.MethodGet, "/status", nil))
+			require.Equal(t, tc.code, w.Code)
+			require.JSONEq(t, tc.body, w.Body.String())
+		})
 	}
 }

@@ -67,6 +67,9 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	var waiting int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM event_outbox WHERE published_at IS NULL AND attempts > 0`).Scan(&waiting))
 	require.Equal(t, 1, waiting, "a publish outage must retain the committed schedule event")
+	status, body = doRequest(t, client, http.MethodGet, srv.URL+"/status", "", nil)
+	require.Equal(t, http.StatusOK, status)
+	require.JSONEq(t, `{"schedules":"available","followup":"delayed"}`, string(body))
 	pub.SetJetStream(js)
 
 	msg := next()
@@ -168,6 +171,16 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 		return outboxRows == publishedRows
 	}, 5*time.Second, 100*time.Millisecond)
 	require.Equal(t, 9, outboxRows)
+	status, body = doRequest(t, client, http.MethodGet, srv.URL+"/status", "", nil)
+	require.Equal(t, http.StatusOK, status)
+	require.JSONEq(t, `{"schedules":"available","followup":"available"}`, string(body))
+	_, err = db.Exec(`UPDATE event_outbox SET published_at=NULL,
+ available_at=DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 1 HOUR),
+ created_at=DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 6 SECOND) LIMIT 1`)
+	require.NoError(t, err)
+	status, body = doRequest(t, client, http.MethodGet, srv.URL+"/status", "", nil)
+	require.Equal(t, http.StatusOK, status)
+	require.JSONEq(t, `{"schedules":"available","followup":"delayed"}`, string(body))
 
 	// RED + domain event counters are on the app's single /metrics port.
 	status, metricsBody := doRequest(t, client, http.MethodGet, srv.URL+"/metrics", "", nil)

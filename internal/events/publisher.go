@@ -70,6 +70,16 @@ func (p *Publisher) jetStream() jetstream.JetStream {
 	return p.js
 }
 
+// Connected reports whether the underlying NATS connection can currently
+// hand an event to JetStream.
+func (p *Publisher) Connected() bool {
+	if p == nil {
+		return false
+	}
+	js := p.jetStream()
+	return js != nil && js.Conn() != nil && js.Conn().IsConnected()
+}
+
 func (p *Publisher) PublishScheduleCreated(ctx context.Context, evt ScheduleEvent) error {
 	return p.publish(ctx, SubjectScheduleCreated, evt.ScheduleID, evt.OccurredAt, evt)
 }

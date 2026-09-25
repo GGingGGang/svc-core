@@ -47,6 +47,6 @@ func (s *Service) RunOutbox(ctx context.Context) { s.outbox.Run(ctx) }
 func (s *Service) dispatchOutbox(ctx context.Context) {
 	if _, err := s.outbox.DispatchOnce(ctx); err != nil {
 		// The durable row remains available for the background worker.
-		log.Printf("ERROR dispatch schedule event outbox: %v", err)
+		log.Printf("ERROR dispatch schedule event outbox: dispatch_failed")
 	}
 }

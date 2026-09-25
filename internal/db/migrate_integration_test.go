@@ -47,14 +47,14 @@ func TestMigrateUpFromVersionOne(t *testing.T) {
 	var version int
 	var dirty bool
 	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty))
-	require.Equal(t, 3, version)
+	require.Equal(t, 6, version)
 	require.False(t, dirty)
 
 	_, err = sqlDB.ExecContext(ctx, "UPDATE schema_migrations SET dirty=TRUE")
 	require.NoError(t, err)
 	var dirtyErr migrate.ErrDirty
 	require.ErrorAs(t, MigrateUp(ctx, cfg), &dirtyErr, "dirty migration history must stop startup")
-	require.Equal(t, 3, dirtyErr.Version)
+	require.Equal(t, 6, dirtyErr.Version)
 }
 
 func TestMigrateUpOnNewDatabase(t *testing.T) {

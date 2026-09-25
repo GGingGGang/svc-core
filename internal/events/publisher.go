@@ -104,7 +104,7 @@ func (p *Publisher) publish(ctx context.Context, subject, scheduleID string, occ
 	if p.jetStream() == nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
 		err := fmt.Errorf("publish %s: nats not connected", subject)
-		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
+		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s reason=nats_disconnected", subject, scheduleID)
 		return err
 	}
 
@@ -122,7 +122,7 @@ func (p *Publisher) publishData(ctx context.Context, subject, scheduleID string,
 	if js == nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
 		err := fmt.Errorf("publish %s: nats not connected", subject)
-		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
+		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s reason=nats_disconnected", subject, scheduleID)
 		return err
 	}
 
@@ -141,7 +141,7 @@ func (p *Publisher) publishData(ctx context.Context, subject, scheduleID string,
 
 	if _, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(dedupID)); err != nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()
-		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s err=%v", subject, scheduleID, err)
+		log.Printf("ERROR domain event publish failed: subject=%s schedule_id=%s reason=publish_failed", subject, scheduleID)
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
 

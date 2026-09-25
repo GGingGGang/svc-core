@@ -123,7 +123,7 @@ func setupEventPublisher(ctx context.Context, natsURL string) *events.Publisher 
 				}
 				nc.Close()
 			}
-			log.Printf("nats setup failed, retrying: %v", err)
+			log.Printf("nats setup failed, retrying")
 			select {
 			case <-ctx.Done():
 				return

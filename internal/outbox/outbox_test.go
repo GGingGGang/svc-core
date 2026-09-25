@@ -1,17 +1,23 @@
 package outbox
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 )
 
-func TestTruncateError(t *testing.T) {
-	if got := truncateError(errors.New("temporary failure")); got != "temporary failure" {
-		t.Fatalf("short error changed: %q", got)
-	}
-	long := strings.Repeat("x", 700)
-	if got := truncateError(errors.New(long)); len(got) != 512 {
-		t.Fatalf("error length = %d, want 512", len(got))
+func TestSafePublishFailureNeverRecordsExternalError(t *testing.T) {
+	secret := "token=private-key user schedule content " + strings.Repeat("x", 600)
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{errors.New(secret), "publish_failed"},
+		{context.DeadlineExceeded, "publish_timeout"},
+	} {
+		if got := safePublishFailure(test.err); got != test.want || strings.Contains(got, secret) {
+			t.Fatalf("unsafe publish failure code: %q", got)
+		}
 	}
 }

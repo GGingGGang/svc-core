@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -131,16 +132,15 @@ func (d *Dispatcher) claim(ctx context.Context) (*claimedEvent, error) {
 func (d *Dispatcher) reschedule(ctx context.Context, evt *claimedEvent, publishErr error) error {
 	_, err := d.db.ExecContext(ctx, `UPDATE event_outbox SET attempts=attempts+1,
  available_at=DATE_ADD(UTC_TIMESTAMP(3), INTERVAL LEAST(300, POW(2, LEAST(attempts + 1, 8))) SECOND),
- locked_until=NULL, locked_by=NULL, last_error=? WHERE id=? AND locked_by=?`, truncateError(publishErr), evt.id[:], evt.lockID[:])
+ locked_until=NULL, locked_by=NULL, last_error=? WHERE id=? AND locked_by=?`, safePublishFailure(publishErr), evt.id[:], evt.lockID[:])
 	return err
 }
 
-func truncateError(err error) string {
-	s := err.Error()
-	if len(s) > 512 {
-		return s[:512]
+func safePublishFailure(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "publish_timeout"
 	}
-	return s
+	return "publish_failed"
 }
 
 // Run keeps draining retryable rows until shutdown. It has no effect on HTTP
@@ -152,7 +152,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		for {
 			worked, err := d.DispatchOnce(ctx)
 			if err != nil {
-				log.Printf("ERROR dispatch outbox event: %v", err)
+				log.Printf("ERROR dispatch outbox event: dispatch_failed")
 				break
 			}
 			if !worked {

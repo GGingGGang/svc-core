@@ -114,6 +114,9 @@ func TestExtractIntegration(t *testing.T) {
 			}
 			return count == 1
 		}, 5*time.Second, 100*time.Millisecond, "a success ai_extractions row should be recorded")
+		var schedules int
+		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schedules").Scan(&schedules))
+		require.Zero(t, schedules, "extraction alone must not save a schedule")
 	})
 
 	t.Run("text over 10000 Unicode chars is rejected before calling gemini", func(t *testing.T) {

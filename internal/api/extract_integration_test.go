@@ -20,9 +20,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 
 	"github.com/GGingGGang/svc-core/internal/ai"
+	"github.com/GGingGGang/svc-core/internal/observability"
 )
 
 func newGeminiStub(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -164,13 +166,17 @@ func TestExtractIntegration(t *testing.T) {
 // always-429 Gemini) so it doesn't share the happy-path server's audit-row
 // count above.
 func TestExtractIntegration_RateLimited(t *testing.T) {
+	var upstreamCalls atomic.Int32
 	gemini := newGeminiStub(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
 		w.Header().Set("Retry-After", "12")
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	aiClnt := ai.New(gemini.URL, "gemini-test", "server-key")
 
 	srv, jwks, db := setupServerWithPublisher(t, nil, aiClnt)
+	requestsBefore := testutil.ToFloat64(observability.AIExtractionRequestsTotal)
+	externalBefore := testutil.ToFloat64(observability.AIExternalRequestsTotal.WithLabelValues("429"))
 	client := srv.Client()
 	token := jwks.mint(t, uuid.New().String(), time.Hour)
 
@@ -192,6 +198,9 @@ func TestExtractIntegration_RateLimited(t *testing.T) {
 
 	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
 	require.Equal(t, "12", resp.Header.Get("Retry-After"))
+	require.Equal(t, int32(2), upstreamCalls.Load())
+	require.Equal(t, requestsBefore+1, testutil.ToFloat64(observability.AIExtractionRequestsTotal))
+	require.Equal(t, externalBefore+2, testutil.ToFloat64(observability.AIExternalRequestsTotal.WithLabelValues("429")))
 
 	require.Eventually(t, func() bool {
 		var count int

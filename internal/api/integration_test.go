@@ -31,6 +31,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 
@@ -39,6 +40,7 @@ import (
 	coredb "github.com/GGingGGang/svc-core/internal/db"
 	"github.com/GGingGGang/svc-core/internal/events"
 	authmw "github.com/GGingGGang/svc-core/internal/middleware"
+	"github.com/GGingGGang/svc-core/internal/observability"
 	"github.com/GGingGGang/svc-core/internal/service"
 )
 
@@ -500,6 +502,7 @@ func TestScheduleEventRevisions(t *testing.T) {
 
 func TestCreateScheduleIdempotency(t *testing.T) {
 	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	createdBefore := testutil.ToFloat64(observability.ScheduleMutationsTotal.WithLabelValues("create"))
 	user := jwks.mint(t, uuid.New().String(), time.Hour)
 	otherUser := jwks.mint(t, uuid.New().String(), time.Hour)
 	key := uuid.New().String()
@@ -526,6 +529,7 @@ func TestCreateScheduleIdempotency(t *testing.T) {
 	status, replay := post(user, body)
 	require.Equal(t, http.StatusCreated, status)
 	require.Equal(t, first, replay, "retry must return the original schedule and reminder IDs")
+	require.Equal(t, createdBefore+1, testutil.ToFloat64(observability.ScheduleMutationsTotal.WithLabelValues("create")))
 
 	status, _ = post(user, `{"title":"different","start_at":"2026-10-01T09:00:00Z"}`)
 	require.Equal(t, http.StatusConflict, status)
@@ -554,6 +558,8 @@ func TestCreateScheduleIdempotency(t *testing.T) {
 
 func TestUpdateDeleteIdempotency(t *testing.T) {
 	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
+	cancelledBefore := testutil.ToFloat64(observability.ScheduleMutationsTotal.WithLabelValues("cancel"))
+	deletedBefore := testutil.ToFloat64(observability.ScheduleMutationsTotal.WithLabelValues("delete"))
 	token := jwks.mint(t, uuid.New().String(), time.Hour)
 	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "meeting", "start_at": "2026-10-01T09:00:00Z"})
 	require.Equal(t, http.StatusCreated, status, string(body))
@@ -582,15 +588,21 @@ func TestUpdateDeleteIdempotency(t *testing.T) {
 	require.JSONEq(t, string(first), string(replay))
 	status, _ = send(http.MethodPatch, created.ID, "update-key", `{"title":"different"}`)
 	require.Equal(t, http.StatusConflict, status)
+	status, _ = send(http.MethodPatch, created.ID, "cancel-key", `{"status":"cancelled"}`)
+	require.Equal(t, http.StatusOK, status)
+	status, _ = send(http.MethodPatch, created.ID, "cancel-key", `{"status":"cancelled"}`)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, cancelledBefore+1, testutil.ToFloat64(observability.ScheduleMutationsTotal.WithLabelValues("cancel")))
 	status, _ = send(http.MethodDelete, created.ID, "delete-key", "")
 	require.Equal(t, http.StatusNoContent, status)
 	status, _ = send(http.MethodDelete, created.ID, "delete-key", "")
 	require.Equal(t, http.StatusNoContent, status)
 	status, _ = send(http.MethodDelete, uuid.NewString(), "delete-key", "")
 	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, deletedBefore+1, testutil.ToFloat64(observability.ScheduleMutationsTotal.WithLabelValues("delete")))
 	var events int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM event_outbox").Scan(&events))
-	require.Equal(t, 4, events, "the keyed retry must not emit another event")
+	require.Equal(t, 5, events, "the keyed retry must not emit another event")
 	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "bulk target", "start_at": "2026-10-02T09:00:00Z"})
 	require.Equal(t, http.StatusCreated, status, string(body))
 	var bulkTarget scheduleJSON

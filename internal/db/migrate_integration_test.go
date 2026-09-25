@@ -49,6 +49,12 @@ func TestMigrateUpFromVersionOne(t *testing.T) {
 	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty))
 	require.Equal(t, 6, version)
 	require.False(t, dirty)
+	_, err = sqlDB.ExecContext(ctx, "ALTER TABLE schedules DROP COLUMN revision")
+	require.NoError(t, err)
+	require.ErrorIs(t, CheckReady(ctx, sqlDB), ErrRequiredSchema, "a required missing column must make readiness fail")
+	_, err = sqlDB.ExecContext(ctx, "ALTER TABLE schedules ADD COLUMN revision BIGINT NOT NULL DEFAULT 1")
+	require.NoError(t, err)
+	require.NoError(t, CheckReady(ctx, sqlDB))
 
 	_, err = sqlDB.ExecContext(ctx, "UPDATE schema_migrations SET dirty=TRUE")
 	require.NoError(t, err)

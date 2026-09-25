@@ -10,7 +10,9 @@ package events_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -115,7 +117,7 @@ func TestPublisher_HeadersDedupAndPayload(t *testing.T) {
 	require.Equal(t, events.SubjectScheduleCreated, msg.Subject())
 	require.Equal(t, "application/json", msg.Headers().Get("Content-Type"))
 	require.Equal(t,
-		events.SubjectScheduleCreated+":"+evt.ScheduleID+":"+occurredAt.Format(time.RFC3339Nano),
+		events.SubjectScheduleCreated+":"+evt.ScheduleID+":"+occurredAt.Format(time.RFC3339Nano)+":"+fmt.Sprintf("%x", sha256.Sum256(msg.Data())),
 		msg.Headers().Get("Nats-Msg-Id"))
 	require.Equal(t, "00-"+sc.TraceID().String()+"-"+sc.SpanID().String()+"-01", msg.Headers().Get("traceparent"))
 
@@ -128,6 +130,20 @@ func TestPublisher_HeadersDedupAndPayload(t *testing.T) {
 	require.Len(t, decoded.Reminders, 1)
 	require.Equal(t, int32(30), decoded.Reminders[0].MinutesBefore)
 	require.Equal(t, "push", decoded.Reminders[0].Channel)
+
+	// A different revision at the same millisecond must not share the first
+	// event's JetStream deduplication id.
+	evt.Title = "변경된 회의"
+	evt.Revision++
+	require.NoError(t, pub.PublishScheduleCreated(tracedCtx, evt))
+	info, err = stream.Info(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, info.State.Msgs)
+	msg, err = cons.Next(jetstream.FetchMaxWait(5 * time.Second))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(msg.Data(), &decoded))
+	require.Equal(t, evt.Title, decoded.Title)
+	require.Equal(t, evt.Revision, decoded.Revision)
 }
 
 func TestPublisher_UpdatedAndDeletedUseDistinctSubjects(t *testing.T) {

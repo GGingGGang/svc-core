@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -137,7 +138,7 @@ func (p *Publisher) publishData(ctx context.Context, subject, scheduleID string,
 		}
 	}
 
-	dedupID := fmt.Sprintf("%s:%s:%s", subject, scheduleID, occurredAt.UTC().Format(time.RFC3339Nano))
+	dedupID := fmt.Sprintf("%s:%s:%s:%x", subject, scheduleID, occurredAt.UTC().Format(time.RFC3339Nano), sha256.Sum256(data))
 
 	if _, err := js.PublishMsg(ctx, msg, jetstream.WithMsgID(dedupID)); err != nil {
 		observability.DomainEventPublishFailedTotal.WithLabelValues(subject).Inc()

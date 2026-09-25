@@ -39,7 +39,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	t.Cleanup(nc.Close)
 	require.NoError(t, events.EnsureStream(ctx, js))
 
-	pub := events.NewPublisher(js)
+	pub := events.NewPublisher(nil)
 	srv, jwks, db := setupServerWithPublisher(t, pub, nil)
 	client := srv.Client()
 
@@ -50,7 +50,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	require.NoError(t, err)
 	next := func() jetstream.Msg {
 		t.Helper()
-		msg, err := cons.Next(jetstream.FetchMaxWait(5 * time.Second))
+		msg, err := cons.Next(jetstream.FetchMaxWait(10 * time.Second))
 		require.NoError(t, err)
 		return msg
 	}
@@ -64,6 +64,10 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	require.Equal(t, http.StatusCreated, status, string(body))
 	var created scheduleJSON
 	require.NoError(t, json.Unmarshal(body, &created))
+	var waiting int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM event_outbox WHERE published_at IS NULL AND attempts > 0`).Scan(&waiting))
+	require.Equal(t, 1, waiting, "a publish outage must retain the committed schedule event")
+	pub.SetJetStream(js)
 
 	msg := next()
 	require.Equal(t, events.SubjectScheduleCreated, msg.Subject())

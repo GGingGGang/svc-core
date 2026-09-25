@@ -15,7 +15,7 @@ func CheckReady(ctx context.Context, sqlDB *sql.DB) error {
 	if err := sqlDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("%w: database ping: %v", ErrRequiredSchema, err)
 	}
-	for _, table := range []string{"event_outbox", "schedule_create_requests"} {
+	for _, table := range []string{"schedules", "schedule_reminders", "event_outbox", "schedule_create_requests", "schedule_mutation_requests"} {
 		rows, err := sqlDB.QueryContext(ctx, "SELECT 1 FROM "+table+" LIMIT 0")
 		if err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrRequiredSchema, table, err)

@@ -55,6 +55,9 @@ func TestMigrateUpFromVersionOne(t *testing.T) {
 	var dirtyErr migrate.ErrDirty
 	require.ErrorAs(t, MigrateUp(ctx, cfg), &dirtyErr, "dirty migration history must stop startup")
 	require.Equal(t, 6, dirtyErr.Version)
+	_, err = sqlDB.ExecContext(ctx, "DROP TABLE schedule_reminders")
+	require.NoError(t, err)
+	require.ErrorIs(t, CheckReady(ctx, sqlDB), ErrRequiredSchema)
 }
 
 func TestMigrateUpOnNewDatabase(t *testing.T) {

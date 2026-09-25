@@ -27,39 +27,39 @@ var version = "dev" // -ldflags "-X main.version=<GIT_SHA>"
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatal("load config failed")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	if err := db.MigrateUp(ctx, cfg); err != nil {
-		log.Fatalf("migrate database: %v", err)
+		log.Fatal("migrate database failed")
 	}
 
 	shutdownTracing, err := observability.SetupTracing(ctx)
 	if err != nil {
-		log.Fatalf("setup tracing: %v", err)
+		log.Fatal("setup tracing failed")
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdownTracing(shutdownCtx); err != nil {
-			log.Printf("tracing shutdown failed: %v", err)
+			log.Printf("tracing shutdown failed")
 		}
 	}()
 
 	sqlDB, err := db.Connect(ctx, cfg)
 	if err != nil {
-		log.Fatalf("connect db: %v", err)
+		log.Fatal("connect db failed")
 	}
 	defer sqlDB.Close()
 	if err := db.CheckReady(ctx, sqlDB); err != nil {
-		log.Fatalf("database readiness: %v", err)
+		log.Fatal("database readiness failed")
 	}
 
 	jwtAuth, err := authmw.NewJWTAuth(cfg.JWKSURL, cfg.AuthIntrospectURL, cfg.JWTIssuer, cfg.JWTAudience)
 	if err != nil {
-		log.Fatalf("setup jwt auth: %v", err)
+		log.Fatal("setup jwt auth failed")
 	}
 
 	publisher := setupEventPublisher(ctx, cfg.NATSURL)
@@ -86,8 +86,8 @@ func main() {
 	}()
 
 	select {
-	case err := <-errCh:
-		log.Fatalf("server failed: %v", err)
+	case <-errCh:
+		log.Fatal("server failed")
 	case <-ctx.Done():
 		log.Printf("shutdown signal received")
 	}
@@ -95,7 +95,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+		log.Printf("graceful shutdown failed")
 	}
 }
 

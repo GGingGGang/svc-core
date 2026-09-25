@@ -49,7 +49,7 @@ func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in Ext
 		var marshalErr error
 		resultJSON, marshalErr = json.Marshal(result)
 		if marshalErr != nil {
-			log.Printf("ERROR marshal extraction result for audit row failed: %v", marshalErr)
+			log.Printf("ERROR marshal extraction result for audit row failed")
 		}
 	}
 
@@ -117,14 +117,14 @@ func (s *Service) finishExtraction(id uuid.UUID) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if _, err := s.db.ExecContext(ctx, "UPDATE ai_request_admissions SET finished_at = UTC_TIMESTAMP(3) WHERE id = ?", idBytes(id)); err != nil {
-		log.Printf("ERROR finish ai request admission: %v", err)
+		log.Printf("ERROR finish ai request admission")
 	}
 }
 
 func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, rawText string, resultJSON []byte, status repo.AiExtractionsStatus, latencyMs int32) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		log.Printf("ERROR generate ai_extractions id failed: %v", err)
+		log.Printf("ERROR generate ai_extractions id failed")
 		return
 	}
 
@@ -143,7 +143,7 @@ func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, rawTex
 		Status:     status,
 		LatencyMs:  sql.NullInt32{Int32: latencyMs, Valid: true},
 	}); err != nil {
-		log.Printf("ERROR record ai_extractions audit row failed: %v", err)
+		log.Printf("ERROR record ai_extractions audit row failed")
 	}
 }
 

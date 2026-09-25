@@ -19,7 +19,7 @@ import (
 func (s *Service) occurredAt(ctx context.Context) time.Time {
 	var t time.Time
 	if err := s.db.QueryRowContext(ctx, "SELECT UTC_TIMESTAMP(3)").Scan(&t); err != nil {
-		log.Printf("ERROR read db commit timestamp failed, falling back to app clock: %v", err)
+		log.Printf("ERROR read db commit timestamp failed, falling back to app clock")
 		return time.Now().UTC()
 	}
 	return t.UTC()

@@ -35,7 +35,7 @@ NATS_URL=nats://nats.data.svc.cluster.local:4222  # default shown; in-cluster Je
 OTEL_TRACES_EXPORTER=none  # default none if unset; set otlp once a collector exists
 
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com  # default shown
-GEMINI_MODEL=gemini-3.5-flash                               # default shown
+GEMINI_MODEL=gemini-3.5-flash-lite                          # default shown
 GEMINI_API_KEY=      # optional — fallback used only when a request omits the X-Gemini-Key BYOK header; never commit
 ```
 

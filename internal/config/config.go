@@ -43,7 +43,7 @@ type Config struct {
 	// default because an empty value is a valid ("not configured") state,
 	// not a startup error.
 	GeminiBaseURL string `env:"GEMINI_BASE_URL" envDefault:"https://generativelanguage.googleapis.com"`
-	GeminiModel   string `env:"GEMINI_MODEL" envDefault:"gemini-3.5-flash"`
+	GeminiModel   string `env:"GEMINI_MODEL" envDefault:"gemini-3.5-flash-lite"`
 	GeminiAPIKey  string `env:"GEMINI_API_KEY"`
 }
 

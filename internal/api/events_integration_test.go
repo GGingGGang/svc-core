@@ -8,8 +8,10 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -56,11 +58,24 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	}
 
 	// create → created.v1, with the reminder snapshot attached.
-	status, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules", token, map[string]any{
+	createBody, err := json.Marshal(map[string]any{
 		"title":     "이벤트 테스트",
 		"start_at":  "2026-08-10T06:00:00Z",
 		"reminders": []map[string]any{{"minutes_before": 15, "channel": "push"}},
 	})
+	require.NoError(t, err)
+	createReq, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules", bytes.NewReader(createBody))
+	require.NoError(t, err)
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+	requestID := createResp.Header.Get("X-Request-ID")
+	require.NotEmpty(t, requestID)
+	status := createResp.StatusCode
+	body, err := io.ReadAll(createResp.Body)
+	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, status, string(body))
 	var created scheduleJSON
 	require.NoError(t, json.Unmarshal(body, &created))
@@ -75,6 +90,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	msg := next()
 	require.Equal(t, events.SubjectScheduleCreated, msg.Subject())
 	require.Equal(t, "application/json", msg.Headers().Get("Content-Type"))
+	require.Equal(t, requestID, msg.Headers().Get("x-request-id"))
 	require.NotEmpty(t, msg.Headers().Get("Nats-Msg-Id"))
 	var createdEvt events.ScheduleEvent
 	require.NoError(t, json.Unmarshal(msg.Data(), &createdEvt))

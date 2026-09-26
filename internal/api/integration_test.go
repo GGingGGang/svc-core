@@ -343,6 +343,27 @@ func TestSchedulesIntegration(t *testing.T) {
 		require.True(t, updated.AllDay)
 	})
 
+	t.Run("AI-confirmed schedule keeps its source and owner", func(t *testing.T) {
+		status, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules", userA, map[string]any{
+			"title": "AI 확정 일정", "start_at": "2026-08-09T06:00:00Z", "source": "ai",
+		})
+		require.Equal(t, http.StatusCreated, status, string(body))
+		var created scheduleJSON
+		require.NoError(t, json.Unmarshal(body, &created))
+		require.Equal(t, "ai", created.Source)
+		require.Equal(t, userAID, created.UserID)
+		status, body = doRequest(t, client, http.MethodGet, srv.URL+"/schedules/"+created.ID, userA, nil)
+		require.Equal(t, http.StatusOK, status, string(body))
+		require.NoError(t, json.Unmarshal(body, &created))
+		require.Equal(t, "ai", created.Source)
+		status, _ = doRequest(t, client, http.MethodGet, srv.URL+"/schedules/"+created.ID, userB, nil)
+		require.Equal(t, http.StatusNotFound, status)
+		status, _ = doRequest(t, client, http.MethodPost, srv.URL+"/schedules", userA, map[string]any{
+			"title": "잘못된 AI 후보", "start_at": "2026-08-09T07:00:00Z", "source": "ai", "end_at": "2026-08-09T06:00:00Z",
+		})
+		require.Equal(t, http.StatusBadRequest, status, "AI-confirmed schedules must use the same field validation")
+	})
+
 	t.Run("reminders sub-resource add/list/delete", func(t *testing.T) {
 		_, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules", userA, map[string]any{
 			"title":    "리마인더 테스트",

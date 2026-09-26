@@ -58,13 +58,17 @@ type reminderJSON struct {
 }
 
 type scheduleJSON struct {
-	ID        string         `json:"id"`
-	UserID    string         `json:"user_id"`
-	Title     string         `json:"title"`
-	StartAt   time.Time      `json:"start_at"`
-	Status    string         `json:"status"`
-	Source    string         `json:"source"`
-	Reminders []reminderJSON `json:"reminders"`
+	ID          string         `json:"id"`
+	UserID      string         `json:"user_id"`
+	Title       string         `json:"title"`
+	Description *string        `json:"description"`
+	Location    *string        `json:"location"`
+	StartAt     time.Time      `json:"start_at"`
+	EndAt       *time.Time     `json:"end_at"`
+	AllDay      bool           `json:"all_day"`
+	Status      string         `json:"status"`
+	Source      string         `json:"source"`
+	Reminders   []reminderJSON `json:"reminders"`
 }
 
 // jwksFixture is a self-signed ES256 key pair served as a JWKS from a local
@@ -301,8 +305,8 @@ func TestSchedulesIntegration(t *testing.T) {
 
 	t.Run("patch updates fields and is scoped to the owner", func(t *testing.T) {
 		_, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules", userA, map[string]any{
-			"title":    "초안 제목",
-			"start_at": "2026-08-02T06:00:00Z",
+			"title": "초안 제목", "start_at": "2026-08-02T06:00:00Z", "end_at": "2026-08-02T07:00:00Z",
+			"description": "남길 설명", "location": "비울 장소", "all_day": false,
 		})
 		var created scheduleJSON
 		require.NoError(t, json.Unmarshal(body, &created))
@@ -323,6 +327,20 @@ func TestSchedulesIntegration(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &updated))
 		require.Equal(t, "수정된 제목", updated.Title)
 		require.Equal(t, "tentative", updated.Status)
+		require.Equal(t, "남길 설명", *updated.Description)
+		require.Equal(t, "비울 장소", *updated.Location)
+		require.NotNil(t, updated.EndAt)
+		require.Equal(t, "2026-08-02T07:00:00Z", updated.EndAt.Format(time.RFC3339))
+
+		status, body = doRequest(t, client, http.MethodPatch, srv.URL+"/schedules/"+created.ID, userA, map[string]any{
+			"location": nil, "end_at": nil, "all_day": true,
+		})
+		require.Equal(t, http.StatusOK, status, string(body))
+		require.NoError(t, json.Unmarshal(body, &updated))
+		require.Nil(t, updated.Location, "explicit null must clear location")
+		require.Nil(t, updated.EndAt, "explicit null must clear end time")
+		require.Equal(t, "남길 설명", *updated.Description, "omitted description must remain")
+		require.True(t, updated.AllDay)
 	})
 
 	t.Run("reminders sub-resource add/list/delete", func(t *testing.T) {

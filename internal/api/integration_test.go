@@ -172,6 +172,10 @@ func setupServer(t *testing.T) (*httptest.Server, *jwksFixture) {
 // fine; extract_integration_test.go passes a real one pointed at a local
 // Gemini stub.
 func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Client) (*httptest.Server, *jwksFixture, *sql.DB) {
+	return setupServerWithPublisherWorker(t, pub, aiClnt, true)
+}
+
+func setupServerWithPublisherWorker(t *testing.T, pub *events.Publisher, aiClnt *ai.Client, runWorker bool) (*httptest.Server, *jwksFixture, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -202,7 +206,7 @@ func setupServerWithPublisher(t *testing.T, pub *events.Publisher, aiClnt *ai.Cl
 	require.NoError(t, err)
 
 	coreService := service.New(db, pub, aiClnt)
-	if pub != nil {
+	if pub != nil && runWorker {
 		workerCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() {

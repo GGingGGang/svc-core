@@ -22,6 +22,7 @@ import (
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/GGingGGang/svc-core/internal/events"
+	"github.com/GGingGGang/svc-core/internal/service"
 )
 
 func TestSchedulesPublishDomainEvents(t *testing.T) {
@@ -42,7 +43,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	require.NoError(t, events.EnsureStream(ctx, js))
 
 	pub := events.NewPublisher(nil)
-	srv, jwks, db := setupServerWithPublisher(t, pub, nil)
+	srv, jwks, db := setupServerWithPublisherWorker(t, pub, nil, false)
 	client := srv.Client()
 
 	userID := uuid.New().String()
@@ -85,7 +86,16 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	status, body = doRequest(t, client, http.MethodGet, srv.URL+"/status", "", nil)
 	require.Equal(t, http.StatusOK, status)
 	require.JSONEq(t, `{"schedules":"available","followup":"delayed"}`, string(body))
-	pub.SetJetStream(js)
+	// Simulate process replacement: a fresh Service and worker drain the durable
+	// row left by the old request handler, using the same database.
+	recovered := service.New(db, events.NewPublisher(js), nil)
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	go func() {
+		recovered.RunOutbox(workerCtx)
+		close(workerDone)
+	}()
+	t.Cleanup(func() { stopWorker(); <-workerDone })
 
 	msg := next()
 	require.Equal(t, events.SubjectScheduleCreated, msg.Subject())
@@ -99,6 +109,15 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	require.Equal(t, "manual", createdEvt.Source)
 	require.Len(t, createdEvt.Reminders, 1)
 	require.Equal(t, int32(15), createdEvt.Reminders[0].MinutesBefore)
+	createdID, err := uuid.Parse(created.ID)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		var published bool
+		return db.QueryRow(`SELECT published_at IS NOT NULL FROM event_outbox WHERE schedule_id = ?`, createdID[:]).Scan(&published) == nil && published
+	}, 5*time.Second, 100*time.Millisecond)
+	stopWorker()
+	<-workerDone
+	pub.SetJetStream(js)
 
 	// PATCH → updated.v1.
 	status, body = doRequest(t, client, http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{

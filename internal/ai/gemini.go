@@ -24,6 +24,7 @@ import (
 // "요청 헤더 X-Gemini-Key (BYOK) → env GEMINI_API_KEY").
 var ErrMissingAPIKey = errors.New("gemini: no api key provided")
 var ErrInvalidAPIKey = errors.New("gemini: invalid api key")
+var ErrModelUnavailable = errors.New("gemini: model unavailable")
 var ErrUpstreamUnavailable = errors.New("gemini: upstream unavailable")
 
 // RateLimitedError is returned when a 429 survives one retry. A 5xx after
@@ -126,6 +127,9 @@ func (c *Client) Extract(ctx context.Context, overrideKey string, in ExtractInpu
 	var upstream *upstreamStatusError
 	if errors.As(err, &upstream) && (upstream.status == http.StatusUnauthorized || upstream.status == http.StatusForbidden) {
 		return nil, ErrInvalidAPIKey
+	}
+	if errors.As(err, &upstream) && upstream.status == http.StatusNotFound {
+		return nil, ErrModelUnavailable
 	}
 	if !isRetryable(err) {
 		return nil, err

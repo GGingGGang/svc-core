@@ -62,6 +62,9 @@ func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in Ext
 		if errors.Is(extractErr, ai.ErrInvalidAPIKey) {
 			return nil, false, ErrExtractInvalidKey
 		}
+		if errors.Is(extractErr, ai.ErrModelUnavailable) {
+			return nil, false, ErrExtractModelUnavailable
+		}
 		if errors.Is(extractErr, ai.ErrUpstreamUnavailable) {
 			return nil, false, ErrExtractUpstreamUnavailable
 		}

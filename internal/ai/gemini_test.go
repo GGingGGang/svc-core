@@ -154,6 +154,17 @@ func TestExtract_InvalidAPIKey(t *testing.T) {
 	require.ErrorIs(t, err, ai.ErrInvalidAPIKey)
 }
 
+func TestExtract_ModelUnavailable(t *testing.T) {
+	var calls atomic.Int32
+	srv := stubGeminiServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := ai.New(srv.URL, "retired-model", "key").Extract(context.Background(), "", ai.ExtractInput{Text: "meeting", Now: time.Now(), Timezone: "UTC"})
+	require.ErrorIs(t, err, ai.ErrModelUnavailable)
+	require.Equal(t, int32(1), calls.Load())
+}
+
 func TestExtract_RetryInvalidAPIKey(t *testing.T) {
 	var attempts int32
 	srv := stubGeminiServer(t, func(w http.ResponseWriter, _ *http.Request) {

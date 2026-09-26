@@ -22,7 +22,7 @@ import (
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/GGingGGang/svc-core/internal/events"
-	"github.com/GGingGGang/svc-core/internal/service"
+	"github.com/GGingGGang/svc-core/internal/outbox"
 )
 
 func TestSchedulesPublishDomainEvents(t *testing.T) {
@@ -86,16 +86,13 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	status, body = doRequest(t, client, http.MethodGet, srv.URL+"/status", "", nil)
 	require.Equal(t, http.StatusOK, status)
 	require.JSONEq(t, `{"schedules":"available","followup":"delayed"}`, string(body))
-	// Simulate process replacement: a fresh Service and worker drain the durable
-	// row left by the old request handler, using the same database.
-	recovered := service.New(db, events.NewPublisher(js), nil)
-	workerCtx, stopWorker := context.WithCancel(ctx)
-	workerDone := make(chan struct{})
-	go func() {
-		recovered.RunOutbox(workerCtx)
-		close(workerDone)
-	}()
-	t.Cleanup(func() { stopWorker(); <-workerDone })
+	// Simulate process replacement: a fresh dispatcher claims the durable row
+	// left by the old request handler from the same database.
+	recovered := outbox.NewDispatcher(db, events.NewPublisher(js))
+	require.Eventually(t, func() bool {
+		worked, err := recovered.DispatchOnce(ctx)
+		return err == nil && worked
+	}, 10*time.Second, 100*time.Millisecond)
 
 	msg := next()
 	require.Equal(t, events.SubjectScheduleCreated, msg.Subject())
@@ -115,8 +112,6 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 		var published bool
 		return db.QueryRow(`SELECT published_at IS NOT NULL FROM event_outbox WHERE schedule_id = ?`, createdID[:]).Scan(&published) == nil && published
 	}, 5*time.Second, 100*time.Millisecond)
-	stopWorker()
-	<-workerDone
 	pub.SetJetStream(js)
 
 	// PATCH → updated.v1.

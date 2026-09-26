@@ -148,6 +148,9 @@ func (c *Client) Extract(ctx context.Context, overrideKey string, in ExtractInpu
 	if errors.As(err, &upstream) && (upstream.status == http.StatusUnauthorized || upstream.status == http.StatusForbidden) {
 		return nil, ErrInvalidAPIKey
 	}
+	if errors.As(err, &upstream) && upstream.status == http.StatusNotFound {
+		return nil, ErrModelUnavailable
+	}
 	if !isRetryable(err) {
 		return nil, err
 	}

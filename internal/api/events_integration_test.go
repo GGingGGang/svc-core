@@ -113,6 +113,13 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 		return db.QueryRow(`SELECT published_at IS NOT NULL FROM event_outbox WHERE schedule_id = ?`, createdID[:]).Scan(&published) == nil && published
 	}, 5*time.Second, 100*time.Millisecond)
 	pub.SetJetStream(js)
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	go func() {
+		recovered.Run(workerCtx)
+		close(workerDone)
+	}()
+	t.Cleanup(func() { stopWorker(); <-workerDone })
 
 	// PATCH → updated.v1.
 	status, body = doRequest(t, client, http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{

@@ -7,8 +7,10 @@ package observability
 import (
 	"context"
 	"os"
+	"strconv"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -45,7 +47,10 @@ func SetupTracing(ctx context.Context) (shutdown func(context.Context) error, er
 		return nil, err
 	}
 
-	res, err := resource.New(ctx, resource.WithFromEnv())
+	res, err := resource.New(ctx,
+		resource.WithFromEnv(),
+		resource.WithAttributes(attribute.String("service.name", serviceName())),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -53,8 +58,40 @@ func SetupTracing(ctx context.Context) (shutdown func(context.Context) error, er
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(samplerFromEnv()),
 	)
 	otel.SetTracerProvider(tp)
 
 	return tp.Shutdown, nil
+}
+
+func serviceName() string {
+	if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
+		return name
+	}
+	return "core"
+}
+
+func samplerFromEnv() sdktrace.Sampler {
+	switch os.Getenv("OTEL_TRACES_SAMPLER") {
+	case "always_off":
+		return sdktrace.NeverSample()
+	case "traceidratio":
+		ratio, err := strconv.ParseFloat(os.Getenv("OTEL_TRACES_SAMPLER_ARG"), 64)
+		if err == nil && ratio >= 0 && ratio <= 1 {
+			return sdktrace.TraceIDRatioBased(ratio)
+		}
+	case "parentbased_always_off":
+		return sdktrace.ParentBased(sdktrace.NeverSample())
+	case "parentbased_traceidratio":
+		ratio, err := strconv.ParseFloat(os.Getenv("OTEL_TRACES_SAMPLER_ARG"), 64)
+		if err == nil && ratio >= 0 && ratio <= 1 {
+			return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+		}
+	case "always_on":
+		return sdktrace.AlwaysSample()
+	case "", "parentbased_always_on":
+		return sdktrace.ParentBased(sdktrace.AlwaysSample())
+	}
+	return sdktrace.ParentBased(sdktrace.AlwaysSample())
 }

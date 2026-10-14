@@ -15,6 +15,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type contextKey int
@@ -53,7 +54,7 @@ func NewJWTAuth(jwksURL, introspectURL, issuer, audience string) (*JWTAuth, erro
 	if err := cache.Register(jwksURL, jwk.WithMinRefreshInterval(15*time.Minute)); err != nil {
 		return nil, err
 	}
-	return &JWTAuth{cache: cache, jwksURL: jwksURL, introspectURL: introspectURL, client: &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, issuer: issuer, audience: audience}, nil
+	return &JWTAuth{cache: cache, jwksURL: jwksURL, introspectURL: introspectURL, client: &http.Client{Timeout: 2 * time.Second, Transport: otelhttp.NewTransport(http.DefaultTransport), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, issuer: issuer, audience: audience}, nil
 }
 
 // Middleware rejects invalid or inactive Bearer JWTs with 401, fails closed

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/GGingGGang/svc-core/internal/observability"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // ErrMissingAPIKey is returned when neither the request's BYOK header nor
@@ -88,7 +89,7 @@ type Client struct {
 // supply its own BYOK key.
 func New(baseURL, model, defaultKey string) *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: requestTimeout},
+		httpClient: &http.Client{Timeout: requestTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 		baseURL:    baseURL,
 		model:      model,
 		defaultKey: defaultKey,

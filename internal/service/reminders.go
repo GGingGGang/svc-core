@@ -6,11 +6,33 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/GGingGGang/svc-core/internal/events"
 	"github.com/GGingGGang/svc-core/internal/repo"
 	"github.com/google/uuid"
 )
+
+const maxScheduleReminders = 5
+const maxReminderMinutes = 10080
+
+func validateReminderSet(reminders []ReminderInput) error {
+	if len(reminders) > maxScheduleReminders {
+		return ErrReminderLimit
+	}
+	seen := make(map[string]struct{}, len(reminders))
+	for _, reminder := range reminders {
+		if reminder.MinutesBefore < 0 || reminder.MinutesBefore > maxReminderMinutes {
+			return ErrInvalidReminder
+		}
+		key := fmt.Sprintf("%d:%s", reminder.MinutesBefore, reminder.Channel)
+		if _, ok := seen[key]; ok {
+			return ErrDuplicateReminder
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
 
 func (s *Service) ListReminders(ctx context.Context, userID, scheduleID uuid.UUID) ([]*Reminder, error) {
 	if _, err := s.GetSchedule(ctx, userID, scheduleID); err != nil {
@@ -37,6 +59,9 @@ func (s *Service) ListReminders(ctx context.Context, userID, scheduleID uuid.UUI
 // the full post-insert reminders snapshot (../../PLAN.md §7.3 — reminders is
 // always the complete set, never a delta) before returning the created row.
 func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID, minutesBefore int32, channel, key string, requestHash [32]byte) (*Reminder, error) {
+	if err := validateReminderSet([]ReminderInput{{MinutesBefore: minutesBefore, Channel: channel}}); err != nil {
+		return nil, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -72,6 +97,18 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
+	rows, err := q.ListReminders(ctx, idBytes(scheduleID))
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) >= maxScheduleReminders {
+		return nil, ErrReminderLimit
+	}
+	for _, row := range rows {
+		if row.MinutesBefore == minutesBefore && string(row.Channel) == channel {
+			return nil, ErrDuplicateReminder
+		}
+	}
 
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -85,7 +122,7 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 	}); err != nil {
 		return nil, err
 	}
-	rows, err := q.ListReminders(ctx, idBytes(scheduleID))
+	rows, err = q.ListReminders(ctx, idBytes(scheduleID))
 	if err != nil {
 		return nil, err
 	}

@@ -195,6 +195,33 @@ type AiExtraction struct {
 	CreatedAt  time.Time           `json:"created_at"`
 }
 
+type AiRequestAdmission struct {
+	ID         []byte       `json:"id"`
+	UserID     []byte       `json:"user_id"`
+	StartedAt  time.Time    `json:"started_at"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+}
+
+type AiRequestUser struct {
+	UserID []byte `json:"user_id"`
+}
+
+type EventOutbox struct {
+	ID          []byte          `json:"id"`
+	Subject     string          `json:"subject"`
+	ScheduleID  []byte          `json:"schedule_id"`
+	OccurredAt  time.Time       `json:"occurred_at"`
+	Payload     json.RawMessage `json:"payload"`
+	Headers     json.RawMessage `json:"headers"`
+	Attempts    int32           `json:"attempts"`
+	AvailableAt time.Time       `json:"available_at"`
+	LockedUntil sql.NullTime    `json:"locked_until"`
+	LockedBy    sql.NullString  `json:"locked_by"`
+	LastError   sql.NullString  `json:"last_error"`
+	PublishedAt sql.NullTime    `json:"published_at"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
 type Schedule struct {
 	ID           []byte          `json:"id"`
 	UserID       []byte          `json:"user_id"`
@@ -210,6 +237,24 @@ type Schedule struct {
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 	Revision     int64           `json:"revision"`
+}
+
+type ScheduleCreateRequest struct {
+	UserID         []byte          `json:"user_id"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	RequestHash    []byte          `json:"request_hash"`
+	ResponseJson   json.RawMessage `json:"response_json"`
+	ExpiresAt      time.Time       `json:"expires_at"`
+}
+
+type ScheduleMutationRequest struct {
+	UserID         []byte          `json:"user_id"`
+	Operation      string          `json:"operation"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	ScheduleID     []byte          `json:"schedule_id"`
+	RequestHash    []byte          `json:"request_hash"`
+	ResponseJson   json.RawMessage `json:"response_json"`
+	ExpiresAt      time.Time       `json:"expires_at"`
 }
 
 type ScheduleReminder struct {

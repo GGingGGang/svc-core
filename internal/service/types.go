@@ -25,10 +25,18 @@ type Schedule struct {
 	Reminders    []Reminder
 }
 
-// ScheduleFields is the fully-resolved set of mutable schedule columns —
-// callers (the API layer) merge partial PATCH input against the current
-// row before calling UpdateSchedule, so the service always writes a
-// complete row rather than reasoning about which fields changed.
+// SchedulePatch contains only supplied fields. Pointer-to-pointer fields
+// distinguish omission from an explicit null that clears a nullable column.
+type SchedulePatch struct {
+	Title       *string
+	Description **string
+	Location    **string
+	StartAt     *time.Time
+	EndAt       **time.Time
+	AllDay      *bool
+	Status      *string
+}
+
 type ScheduleFields struct {
 	Title       string
 	Description *string
@@ -37,6 +45,11 @@ type ScheduleFields struct {
 	EndAt       *time.Time
 	AllDay      bool
 	Status      string
+}
+
+type ScheduleCursor struct {
+	StartAt time.Time
+	ID      uuid.UUID
 }
 
 type CreateScheduleInput struct {

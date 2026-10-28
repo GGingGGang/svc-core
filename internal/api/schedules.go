@@ -2,10 +2,13 @@ package api
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,6 +96,14 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
 		return
 	}
+	if errors.Is(err, service.ErrReminderLimit) || errors.Is(err, service.ErrDuplicateReminder) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, service.ErrInvalidReminder) {
+		writeError(w, http.StatusBadRequest, "minutes_before must be between 0 and 10080")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create schedule")
 		return
@@ -131,8 +142,10 @@ func (h *Handler) ListSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	query := r.URL.Query()
+	fromValue, toValue := query.Get("from"), query.Get("to")
 	from := listFrom
-	if v := r.URL.Query().Get("from"); v != "" {
+	if v := fromValue; v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid from (want RFC3339)")
@@ -142,7 +155,7 @@ func (h *Handler) ListSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	to := listTo
-	if v := r.URL.Query().Get("to"); v != "" {
+	if v := toValue; v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid to (want RFC3339)")
@@ -150,14 +163,73 @@ func (h *Handler) ListSchedules(w http.ResponseWriter, r *http.Request) {
 		}
 		to = t.UTC()
 	}
+	if !from.Before(to) {
+		writeError(w, http.StatusBadRequest, "from must be before to")
+		return
+	}
 
 	var status *string
-	if v := r.URL.Query().Get("status"); v != "" {
+	if v := query.Get("status"); v != "" {
 		if !validStatuses[v] {
 			writeError(w, http.StatusBadRequest, "invalid status")
 			return
 		}
 		status = &v
+	}
+
+	limitValues, hasLimit := query["limit"]
+	cursorValues, hasCursor := query["cursor"]
+	search := query.Get("q")
+	if !hasLimit && (hasCursor || search != "") {
+		writeError(w, http.StatusBadRequest, "q and cursor require limit")
+		return
+	}
+	if hasLimit {
+		if len(limitValues) != 1 || fromValue == "" || toValue == "" || (hasCursor && len(cursorValues) != 1) {
+			writeError(w, http.StatusBadRequest, "paginated requests require one limit, from, and to")
+			return
+		}
+		limit, err := strconv.Atoi(limitValues[0])
+		if err != nil || limit < 1 || limit > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		if to.Sub(from) > 366*24*time.Hour {
+			writeError(w, http.StatusBadRequest, "date range must not exceed 366 days")
+			return
+		}
+		filterHash := listFilterHash(userID.String(), from, to, status, search)
+		var cursor *service.ScheduleCursor
+		if hasCursor {
+			token := query.Get("cursor")
+			decoded, err := decodeScheduleCursor(token, filterHash)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid cursor")
+				return
+			}
+			if decoded.StartAt.Before(from) || !decoded.StartAt.Before(to) {
+				writeError(w, http.StatusBadRequest, "invalid cursor")
+				return
+			}
+			cursor = decoded
+		}
+		schedules, hasMore, err := h.svc.ListSchedulesPage(r.Context(), userID, from, to, status, search, cursor, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list schedules")
+			return
+		}
+		resp := make([]scheduleResponse, 0, len(schedules))
+		for _, schedule := range schedules {
+			resp = append(resp, toScheduleResponse(schedule))
+		}
+		var nextCursor *string
+		if hasMore && len(schedules) != 0 {
+			last := schedules[len(schedules)-1]
+			token := encodeScheduleCursor(last.StartAt, last.ID, filterHash)
+			nextCursor = &token
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"schedules": resp, "next_cursor": nextCursor})
+		return
 	}
 
 	schedules, err := h.svc.ListSchedules(r.Context(), userID, from, to, status)
@@ -171,6 +243,46 @@ func (h *Handler) ListSchedules(w http.ResponseWriter, r *http.Request) {
 		resp = append(resp, toScheduleResponse(s))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"schedules": resp})
+}
+
+type scheduleCursorToken struct {
+	StartAt    time.Time `json:"start_at"`
+	ID         string    `json:"id"`
+	FilterHash string    `json:"filter_hash"`
+}
+
+func listFilterHash(userID string, from, to time.Time, status *string, query string) string {
+	statusValue := ""
+	if status != nil {
+		statusValue = *status
+	}
+	filter, _ := json.Marshal([]string{userID, from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano), statusValue, query})
+	hash := sha256.Sum256(filter)
+	return fmt.Sprintf("%x", hash[:])
+}
+
+func encodeScheduleCursor(startAt time.Time, id uuid.UUID, filterHash string) string {
+	value, _ := json.Marshal(scheduleCursorToken{StartAt: startAt.UTC(), ID: id.String(), FilterHash: filterHash})
+	return base64.RawURLEncoding.EncodeToString(value)
+}
+
+func decodeScheduleCursor(value, filterHash string) (*service.ScheduleCursor, error) {
+	data, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, err
+	}
+	var token scheduleCursorToken
+	if err := json.Unmarshal(data, &token); err != nil {
+		return nil, err
+	}
+	if token.FilterHash != filterHash || token.StartAt.IsZero() {
+		return nil, errors.New("cursor filter mismatch")
+	}
+	id, err := uuid.Parse(token.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &service.ScheduleCursor{StartAt: token.StartAt.UTC(), ID: id}, nil
 }
 
 func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
@@ -219,25 +331,7 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, err := h.svc.GetSchedule(r.Context(), userID, id)
-	if errors.Is(err, service.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "schedule not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load schedule")
-		return
-	}
-
-	fields := service.ScheduleFields{
-		Title:       current.Title,
-		Description: current.Description,
-		Location:    current.Location,
-		StartAt:     current.StartAt,
-		EndAt:       current.EndAt,
-		AllDay:      current.AllDay,
-		Status:      current.Status,
-	}
+	fields := service.SchedulePatch{}
 
 	if v, ok := raw["title"]; ok {
 		var p *string
@@ -250,7 +344,7 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "title must contain 1 to 255 characters")
 			return
 		}
-		fields.Title = title
+		fields.Title = &title
 	}
 	if v, ok := raw["description"]; ok {
 		var p *string
@@ -258,7 +352,7 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid description")
 			return
 		}
-		fields.Description = p
+		fields.Description = &p
 	}
 	if v, ok := raw["location"]; ok {
 		var p *string
@@ -266,7 +360,7 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid location")
 			return
 		}
-		fields.Location = p
+		fields.Location = &p
 	}
 	if v, ok := raw["start_at"]; ok {
 		var p *time.Time
@@ -274,7 +368,8 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "start_at must be a non-null RFC3339 timestamp")
 			return
 		}
-		fields.StartAt = p.UTC()
+		v := p.UTC()
+		fields.StartAt = &v
 	}
 	if v, ok := raw["end_at"]; ok {
 		var p *time.Time
@@ -282,7 +377,8 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid end_at")
 			return
 		}
-		fields.EndAt = utcPtr(p)
+		v := utcPtr(p)
+		fields.EndAt = &v
 	}
 	if v, ok := raw["all_day"]; ok {
 		var p *bool
@@ -290,7 +386,7 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "all_day must be a non-null boolean")
 			return
 		}
-		fields.AllDay = *p
+		fields.AllDay = p
 	}
 	if v, ok := raw["status"]; ok {
 		var p *string
@@ -298,9 +394,9 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "status must be one of confirmed, tentative, cancelled")
 			return
 		}
-		fields.Status = *p
+		fields.Status = p
 	}
-	if message := scheduleInputError(fields.Description, fields.Location, fields.StartAt, fields.EndAt); message != "" {
+	if message := scheduleTextInputError(derefStringPatch(fields.Description), derefStringPatch(fields.Location)); message != "" {
 		writeError(w, http.StatusBadRequest, message)
 		return
 	}
@@ -312,6 +408,10 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
+	if errors.Is(err, service.ErrInvalidSchedule) {
+		writeError(w, http.StatusBadRequest, "end_at must be at least 1ms after start_at")
 		return
 	}
 	if err != nil {

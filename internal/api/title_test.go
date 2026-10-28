@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/google/uuid"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,23 @@ func TestNormalizeTitle(t *testing.T) {
 		if got != tc.want || valid != tc.valid {
 			t.Errorf("normalizeTitle(%q) = (%q, %v), want (%q, %v)", tc.input, got, valid, tc.want, tc.valid)
 		}
+	}
+}
+
+func TestScheduleCursorIsBoundToFilters(t *testing.T) {
+	start := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	id := uuid.New()
+	filter := listFilterHash("user", start.Add(-time.Hour), start.Add(time.Hour), nil, "review")
+	token := encodeScheduleCursor(start, id, filter)
+	cursor, err := decodeScheduleCursor(token, filter)
+	if err != nil || cursor.ID != id || !cursor.StartAt.Equal(start) {
+		t.Fatalf("cursor round trip = (%v, %v), want (%v, %v)", cursor, err, id, start)
+	}
+	if _, err := decodeScheduleCursor(token, filter+"changed"); err == nil {
+		t.Fatal("cursor with different filters must be rejected")
+	}
+	if _, err := decodeScheduleCursor("invalid", filter); err == nil {
+		t.Fatal("malformed cursor must be rejected")
 	}
 }
 

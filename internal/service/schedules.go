@@ -18,6 +18,9 @@ import (
 )
 
 func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in CreateScheduleInput) (*Schedule, error) {
+	if err := validateReminderSet(in.Reminders); err != nil {
+		return nil, err
+	}
 	status := in.Status
 	if status == "" {
 		status = string(repo.SchedulesStatusConfirmed)
@@ -219,10 +222,48 @@ func (s *Service) ListSchedules(ctx context.Context, userID uuid.UUID, from, to 
 	return schedules, nil
 }
 
-// UpdateSchedule confirms ownership (ErrNotFound otherwise) then overwrites
-// the mutable columns with fields, which the API layer has already merged
-// against the current row.
-func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fields ScheduleFields, key string, requestHash [32]byte) (*Schedule, error) {
+func (s *Service) ListSchedulesPage(ctx context.Context, userID uuid.UUID, from, to time.Time, status *string, query string, cursor *ScheduleCursor, limit int) ([]*Schedule, bool, error) {
+	var statusParam repo.NullSchedulesStatus
+	if status != nil {
+		statusParam = repo.NullSchedulesStatus{SchedulesStatus: repo.SchedulesStatus(*status), Valid: true}
+	}
+	var cursorStartAt sql.NullTime
+	var cursorID []byte
+	if cursor != nil {
+		cursorStartAt = sql.NullTime{Time: cursor.StartAt, Valid: true}
+		cursorID = idBytes(cursor.ID)
+	}
+	rows, err := s.q.ListSchedulesPage(ctx, repo.ListSchedulesPageParams{
+		UserID:        idBytes(userID),
+		StartAt:       from,
+		StartAt_2:     to,
+		Status:        statusParam,
+		Query:         query,
+		CursorStartAt: cursorStartAt,
+		CursorID:      cursorID,
+		Limit:         int32(limit + 1),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	schedules := make([]*Schedule, 0, len(rows))
+	for _, row := range rows {
+		sch, err := mapSchedule(row, nil)
+		if err != nil {
+			return nil, false, err
+		}
+		schedules = append(schedules, sch)
+	}
+	return schedules, hasMore, nil
+}
+
+// UpdateSchedule merges the patch after locking the row so concurrent changes
+// to different fields cannot overwrite each other.
+func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, patch SchedulePatch, key string, requestHash [32]byte) (*Schedule, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -251,6 +292,31 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, fiel
 	before, err := getSchedule(ctx, q, userID, id)
 	if err != nil {
 		return nil, err
+	}
+	fields := ScheduleFields{Title: before.Title, Description: before.Description, Location: before.Location, StartAt: before.StartAt, EndAt: before.EndAt, AllDay: before.AllDay, Status: before.Status}
+	if patch.Title != nil {
+		fields.Title = *patch.Title
+	}
+	if patch.Description != nil {
+		fields.Description = *patch.Description
+	}
+	if patch.Location != nil {
+		fields.Location = *patch.Location
+	}
+	if patch.StartAt != nil {
+		fields.StartAt = *patch.StartAt
+	}
+	if patch.EndAt != nil {
+		fields.EndAt = *patch.EndAt
+	}
+	if patch.AllDay != nil {
+		fields.AllDay = *patch.AllDay
+	}
+	if patch.Status != nil {
+		fields.Status = *patch.Status
+	}
+	if fields.EndAt != nil && fields.EndAt.Sub(fields.StartAt) < time.Millisecond {
+		return nil, ErrInvalidSchedule
 	}
 
 	if err := q.UpdateSchedule(ctx, repo.UpdateScheduleParams{

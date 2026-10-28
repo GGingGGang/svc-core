@@ -242,7 +242,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":
-          description: Idempotency-Key was already used with different content
+          description: Idempotency-Key conflict, more than five reminders, or duplicate reminder
           content:
             application/json:
               schema:
@@ -255,8 +255,11 @@ paths:
       summary: List schedules in a time range
       description: >-
         Returns schedules with start_at in [from, to). Omitting from/to
-        defaults to the widest range the start_at column can hold. List rows
-        do not include their reminders (fetch a single schedule for that).
+        defaults to the widest range the start_at column can hold for legacy
+        unpaginated requests. Supplying limit opts into keyset pagination and
+        requires from and to with from < to and a range no longer than 366 days.
+        q requires limit and searches title/location for a literal substring.
+        Cursor is bound to the user and all filters. List rows omit reminders.
       parameters:
         - name: from
           in: query
@@ -274,6 +277,23 @@ paths:
           in: query
           schema:
             $ref: "#/components/schemas/ScheduleStatus"
+        - name: q
+          in: query
+          description: Literal substring search in title and location; requires limit.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Opts into pagination; requires from and to.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          description: Cursor returned by the previous page; requires limit and identical filters.
+          schema:
+            type: string
       responses:
         "200":
           description: matching schedules
@@ -286,6 +306,10 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Schedule"
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Present only for paginated requests; null after the last page.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -617,6 +641,7 @@ components:
           type: integer
           format: int32
           minimum: 0
+          maximum: 10080
         channel:
           $ref: "#/components/schemas/ReminderChannel"
 
@@ -676,6 +701,7 @@ components:
           description: links back to the ai_extractions row this schedule was confirmed from, if any
         reminders:
           type: array
+          maxItems: 5
           items:
             $ref: "#/components/schemas/CreateReminderRequest"
 

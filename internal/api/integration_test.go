@@ -18,9 +18,11 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -675,6 +677,122 @@ func TestUpdateDeleteIdempotency(t *testing.T) {
 	require.Equal(t, http.StatusConflict, status)
 }
 
+func TestConcurrentSchedulePatchesPreserveDifferentFields(t *testing.T) {
+	srv, jwks, _ := setupServerWithPublisher(t, nil, nil)
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "initial", "start_at": "2026-10-01T09:00:00Z"})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var created scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &created))
+	status, _ = doRequest(t, srv.Client(), http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"description": strings.Repeat("😀", 10001)})
+	require.Equal(t, http.StatusBadRequest, status, "PATCH must retain the Unicode description limit")
+	status, _ = doRequest(t, srv.Client(), http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"location": strings.Repeat("한", 256)})
+	require.Equal(t, http.StatusBadRequest, status, "PATCH must retain the Unicode location limit")
+	status, _ = doRequest(t, srv.Client(), http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"end_at": "2026-10-01T09:00:00Z"})
+	require.Equal(t, http.StatusBadRequest, status, "merged end time must remain after start time")
+
+	for i := range 20 {
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for _, patch := range []map[string]any{{"title": fmt.Sprintf("title-%d", i)}, {"location": fmt.Sprintf("location-%d", i)}} {
+			go func(patch map[string]any) {
+				<-start
+				payload, err := json.Marshal(patch)
+				if err != nil {
+					results <- err
+					return
+				}
+				req, err := http.NewRequest(http.MethodPatch, srv.URL+"/schedules/"+created.ID, bytes.NewReader(payload))
+				if err != nil {
+					results <- err
+					return
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				resp, err := srv.Client().Do(req)
+				if err != nil {
+					results <- err
+					return
+				}
+				defer resp.Body.Close()
+				response, err := io.ReadAll(resp.Body)
+				if err != nil {
+					results <- err
+					return
+				}
+				if resp.StatusCode != http.StatusOK {
+					results <- fmt.Errorf("PATCH status %d: %s", resp.StatusCode, response)
+					return
+				}
+				results <- nil
+			}(patch)
+		}
+		close(start)
+		require.NoError(t, <-results)
+		require.NoError(t, <-results)
+	}
+
+	status, body = doRequest(t, srv.Client(), http.MethodGet, srv.URL+"/schedules/"+created.ID, token, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	var final scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &final))
+	require.Equal(t, "title-19", final.Title)
+	require.NotNil(t, final.Location)
+	require.Equal(t, "location-19", *final.Location)
+}
+
+func TestSchedulePaginationAndSearch(t *testing.T) {
+	srv, jwks, _ := setupServerWithPublisher(t, nil, nil)
+	user := jwks.mint(t, uuid.New().String(), time.Hour)
+	otherUser := jwks.mint(t, uuid.New().String(), time.Hour)
+	for _, item := range []struct{ user, title string }{
+		{user, "review 100%_alpha"}, {user, "review second"}, {user, "other meeting"}, {otherUser, "review private"},
+	} {
+		status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", item.user, map[string]any{"title": item.title, "start_at": "2026-10-01T09:00:00Z"})
+		require.Equal(t, http.StatusCreated, status, string(body))
+	}
+	pageURL := func(q, cursor string) string {
+		values := url.Values{"from": {"2026-10-01T00:00:00Z"}, "to": {"2026-10-02T00:00:00Z"}, "limit": {"1"}, "q": {q}}
+		if cursor != "" {
+			values.Set("cursor", cursor)
+		}
+		return srv.URL + "/schedules?" + values.Encode()
+	}
+	type page struct {
+		Schedules  []scheduleJSON `json:"schedules"`
+		NextCursor *string        `json:"next_cursor"`
+	}
+
+	status, body := doRequest(t, srv.Client(), http.MethodGet, pageURL("review", ""), user, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	var first page
+	require.NoError(t, json.Unmarshal(body, &first))
+	require.Len(t, first.Schedules, 1)
+	require.NotNil(t, first.NextCursor)
+	require.NotContains(t, first.Schedules[0].Title, "private")
+
+	status, body = doRequest(t, srv.Client(), http.MethodGet, pageURL("review", *first.NextCursor), user, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	var second page
+	require.NoError(t, json.Unmarshal(body, &second))
+	require.Len(t, second.Schedules, 1)
+	require.Nil(t, second.NextCursor)
+	require.NotEqual(t, first.Schedules[0].ID, second.Schedules[0].ID)
+
+	status, body = doRequest(t, srv.Client(), http.MethodGet, pageURL("100%_", ""), user, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	var literal page
+	require.NoError(t, json.Unmarshal(body, &literal))
+	require.Len(t, literal.Schedules, 1, "percent and underscore are literal search characters")
+	require.Equal(t, "review 100%_alpha", literal.Schedules[0].Title)
+
+	status, _ = doRequest(t, srv.Client(), http.MethodGet, pageURL("changed", *first.NextCursor), user, nil)
+	require.Equal(t, http.StatusBadRequest, status, "a cursor is bound to its filters")
+	status, _ = doRequest(t, srv.Client(), http.MethodGet, srv.URL+"/schedules?cursor=bad", user, nil)
+	require.Equal(t, http.StatusBadRequest, status)
+	status, _ = doRequest(t, srv.Client(), http.MethodGet, srv.URL+"/schedules?limit=20", user, nil)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
 func TestReminderIdempotency(t *testing.T) {
 	srv, jwks, db := setupServerWithPublisher(t, nil, nil)
 	token := jwks.mint(t, uuid.New().String(), time.Hour)
@@ -714,6 +832,34 @@ func TestReminderIdempotency(t *testing.T) {
 	var events int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM event_outbox").Scan(&events))
 	require.Equal(t, 3, events, "create, one reminder add and one reminder delete")
+}
+
+func TestReminderLimitsAndDuplicates(t *testing.T) {
+	srv, jwks, _ := setupServerWithPublisher(t, nil, nil)
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	reminders := make([]map[string]any, 5)
+	for i := range reminders {
+		reminders[i] = map[string]any{"minutes_before": i, "channel": "push"}
+	}
+	payload := map[string]any{"title": "limited", "start_at": "2026-10-01T09:00:00Z", "reminders": reminders}
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, payload)
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var created scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &created))
+
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10080, "channel": "email"})
+	require.Equal(t, http.StatusConflict, status, string(body), "the sixth reminder is rejected")
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 0, "channel": "push"})
+	require.Equal(t, http.StatusConflict, status, string(body), "same offset and channel are rejected")
+	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10081, "channel": "email"})
+	require.Equal(t, http.StatusBadRequest, status)
+
+	tooMany := append(append([]map[string]any{}, reminders...), map[string]any{"minutes_before": 10080, "channel": "email"})
+	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "too many", "start_at": "2026-10-02T09:00:00Z", "reminders": tooMany})
+	require.Equal(t, http.StatusConflict, status)
+	duplicate := []map[string]any{{"minutes_before": 10, "channel": "push"}, {"minutes_before": 10, "channel": "push"}}
+	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "duplicate", "start_at": "2026-10-03T09:00:00Z", "reminders": duplicate})
+	require.Equal(t, http.StatusConflict, status)
 }
 
 func TestCreateScheduleRollsBackFailedReminder(t *testing.T) {

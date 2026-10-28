@@ -19,6 +19,7 @@ type Querier interface {
 	ListReminders(ctx context.Context, scheduleID []byte) ([]*ScheduleReminder, error)
 	ListScheduleIDsByIDs(ctx context.Context, arg ListScheduleIDsByIDsParams) ([][]byte, error)
 	ListSchedules(ctx context.Context, arg ListSchedulesParams) ([]*Schedule, error)
+	ListSchedulesPage(ctx context.Context, arg ListSchedulesPageParams) ([]*Schedule, error)
 	UpdateSchedule(ctx context.Context, arg UpdateScheduleParams) error
 }
 

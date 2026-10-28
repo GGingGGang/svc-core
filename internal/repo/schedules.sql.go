@@ -168,50 +168,6 @@ func (q *Queries) DeleteSchedulesByIDs(ctx context.Context, arg DeleteSchedulesB
 	return result.RowsAffected()
 }
 
-const listScheduleIDsByIDs = `-- name: ListScheduleIDsByIDs :many
-SELECT id FROM schedules
-WHERE user_id = ? AND id IN (/*SLICE:ids*/?)
-`
-
-type ListScheduleIDsByIDsParams struct {
-	UserID []byte   `json:"user_id"`
-	Ids    [][]byte `json:"ids"`
-}
-
-func (q *Queries) ListScheduleIDsByIDs(ctx context.Context, arg ListScheduleIDsByIDsParams) ([][]byte, error) {
-	query := listScheduleIDsByIDs
-	var queryParams []interface{}
-	queryParams = append(queryParams, arg.UserID)
-	if len(arg.Ids) > 0 {
-		for _, v := range arg.Ids {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
-	}
-	rows, err := q.db.QueryContext(ctx, query, queryParams...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := [][]byte{}
-	for rows.Next() {
-		var id []byte
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getSchedule = `-- name: GetSchedule :one
 SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision FROM schedules
 WHERE id = ? AND user_id = ?
@@ -279,6 +235,50 @@ func (q *Queries) ListReminders(ctx context.Context, scheduleID []byte) ([]*Sche
 	return items, nil
 }
 
+const listScheduleIDsByIDs = `-- name: ListScheduleIDsByIDs :many
+SELECT id FROM schedules
+WHERE user_id = ? AND id IN (/*SLICE:ids*/?)
+`
+
+type ListScheduleIDsByIDsParams struct {
+	UserID []byte   `json:"user_id"`
+	Ids    [][]byte `json:"ids"`
+}
+
+func (q *Queries) ListScheduleIDsByIDs(ctx context.Context, arg ListScheduleIDsByIDsParams) ([][]byte, error) {
+	query := listScheduleIDsByIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UserID)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var id []byte
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSchedules = `-- name: ListSchedules :many
 SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision FROM schedules
 WHERE user_id = ?
@@ -302,6 +302,82 @@ func (q *Queries) ListSchedules(ctx context.Context, arg ListSchedulesParams) ([
 		arg.StartAt_2,
 		arg.Status,
 		arg.Status,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*Schedule{}
+	for rows.Next() {
+		var i Schedule
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Title,
+			&i.Description,
+			&i.Location,
+			&i.StartAt,
+			&i.EndAt,
+			&i.AllDay,
+			&i.Status,
+			&i.Source,
+			&i.ExtractionID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, &i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSchedulesPage = `-- name: ListSchedulesPage :many
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision
+FROM schedules
+WHERE user_id = ?
+  AND start_at >= ?
+  AND start_at < ?
+  AND (? IS NULL OR status = ?)
+  AND (? = '' OR LOCATE(?, title) > 0 OR LOCATE(?, COALESCE(location, '')) > 0)
+  AND (? IS NULL OR start_at > ? OR (start_at = ? AND id > ?))
+ORDER BY start_at ASC, id ASC
+LIMIT ?
+`
+
+type ListSchedulesPageParams struct {
+	UserID        []byte              `json:"user_id"`
+	StartAt       time.Time           `json:"start_at"`
+	StartAt_2     time.Time           `json:"start_at_2"`
+	Status        NullSchedulesStatus `json:"status"`
+	Query         string              `json:"query"`
+	CursorStartAt sql.NullTime        `json:"cursor_start_at"`
+	CursorID      []byte              `json:"cursor_id"`
+	Limit         int32               `json:"limit"`
+}
+
+func (q *Queries) ListSchedulesPage(ctx context.Context, arg ListSchedulesPageParams) ([]*Schedule, error) {
+	rows, err := q.db.QueryContext(ctx, listSchedulesPage,
+		arg.UserID,
+		arg.StartAt,
+		arg.StartAt_2,
+		arg.Status,
+		arg.Status,
+		arg.Query,
+		arg.Query,
+		arg.Query,
+		arg.CursorStartAt,
+		arg.CursorStartAt,
+		arg.CursorStartAt,
+		arg.CursorID,
+		arg.Limit,
 	)
 	if err != nil {
 		return nil, err

@@ -15,6 +15,18 @@ WHERE user_id = ?
   AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
 ORDER BY start_at ASC, id ASC;
 
+-- name: ListSchedulesPage :many
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision
+FROM schedules
+WHERE user_id = ?
+  AND start_at >= ?
+  AND start_at < ?
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.arg('query') = '' OR LOCATE(sqlc.arg('query'), title) > 0 OR LOCATE(sqlc.arg('query'), COALESCE(location, '')) > 0)
+  AND (sqlc.narg('cursor_start_at') IS NULL OR start_at > sqlc.narg('cursor_start_at') OR (start_at = sqlc.narg('cursor_start_at') AND id > sqlc.arg('cursor_id')))
+ORDER BY start_at ASC, id ASC
+LIMIT ?;
+
 -- name: UpdateSchedule :exec
 UPDATE schedules
 SET title       = ?,

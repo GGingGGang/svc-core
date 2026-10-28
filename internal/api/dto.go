@@ -19,11 +19,8 @@ func normalizeTitle(title string) (string, bool) {
 }
 
 func scheduleInputError(description, location *string, start time.Time, end *time.Time) string {
-	if description != nil && utf8.RuneCountInString(*description) > 10000 {
-		return "description must contain at most 10000 characters"
-	}
-	if location != nil && utf8.RuneCountInString(*location) > 255 {
-		return "location must contain at most 255 characters"
+	if message := scheduleTextInputError(description, location); message != "" {
+		return message
 	}
 	// DATETIME(3) stores milliseconds; a smaller gap can become equal on write.
 	if end != nil && end.Sub(start) < time.Millisecond {
@@ -32,10 +29,27 @@ func scheduleInputError(description, location *string, start time.Time, end *tim
 	return ""
 }
 
+func scheduleTextInputError(description, location *string) string {
+	if description != nil && utf8.RuneCountInString(*description) > 10000 {
+		return "description must contain at most 10000 characters"
+	}
+	if location != nil && utf8.RuneCountInString(*location) > 255 {
+		return "location must contain at most 255 characters"
+	}
+	return ""
+}
+
+func derefStringPatch(value **string) *string {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 type reminderRequest struct {
 	// no "required" here: 0 (remind exactly at start_at) is a valid value
 	// and validator's required treats the zero value as absent.
-	MinutesBefore int32  `json:"minutes_before" validate:"gte=0"`
+	MinutesBefore int32  `json:"minutes_before" validate:"gte=0,lte=10080"`
 	Channel       string `json:"channel" validate:"required,oneof=push email none"`
 }
 

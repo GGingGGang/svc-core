@@ -80,6 +80,14 @@ func (h *Handler) AddReminder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
 		return
 	}
+	if errors.Is(err, service.ErrReminderLimit) || errors.Is(err, service.ErrDuplicateReminder) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, service.ErrInvalidReminder) {
+		writeError(w, http.StatusBadRequest, "minutes_before must be between 0 and 10080")
+		return
+	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
 		return

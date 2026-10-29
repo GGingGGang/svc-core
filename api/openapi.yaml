@@ -25,6 +25,44 @@ security:
   - BearerAuth: []
 
 paths:
+  /schedules.ics:
+    get:
+      tags: [Schedules]
+      summary: Export a bounded date range as an ICS calendar
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: timezone
+          in: query
+          description: Display timezone for date-only overlap; schedule timezone remains unchanged.
+          schema: { type: string, default: UTC }
+      responses:
+        "200":
+          description: ICS calendar, with X-Event-Count and a 100-event maximum.
+          headers:
+            X-Event-Count:
+              schema: { type: integer, minimum: 0, maximum: 100 }
+          content:
+            text/calendar:
+              schema: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: More than 100 schedules match; narrow the date range.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /healthz:
     get:
       tags: [Health]

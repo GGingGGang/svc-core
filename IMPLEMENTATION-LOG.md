@@ -36,3 +36,6 @@
 - `SCH-017`: `POST /schedules/{id}/clone`으로 소유자 범위 안에서 일정을 복제한다. 제목/설명/장소/시간/시간대/all-day 날짜를 선택적으로 덮어쓸 수 있고, 미지정 필드는 원본 값을 유지한다. 새 UUID·revision 1로 생성하며 상태는 `confirmed`, 출처는 `manual`로 초기화한다. 원본 알림 정의는 Notify capability에서 현재 검증된 Telegram 채널일 때만 복제하고, 키 재사용 본문 충돌은 409로 거절한다. 기존 추출·dispatch 이력은 복사하지 않는다. 통합 테스트는 새 일정 생성, 알림 ID 재발급, 동일 키 재시도 및 교차 사용자 404를 확인한다.
 - `AIX-016` API 응답 계약: 추출 후보 중복 의심 시 `needs_confirmation=true`, `issues`에 `possible_duplicate`를 포함한다. `duplicate_of` ID는 제공하지 않는다. 판정은 같은 사용자의 저장 일정 중 제목 trim/lower 일치 및 시간 구간 겹침이며 기존 일정을 수정하거나 삭제하지 않는다.
 - 검증: `go test ./...` 통과, `git diff --check` 통과. Docker 통합 테스트 실행 환경은 사용할 수 없어 실제 DB/NATS 통합 실행은 미검증이다.
+
+- `EXT-006`: `GET /schedules.ics?from&to&timezone` exports only the authenticated user's bounded `[from,to)` range as RFC 5545 text/calendar. It uses a hard 100-event cap and returns 413 with a request to narrow the range rather than silently truncate. All-day events keep their exclusive local date end; timed values are emitted in UTC. Text values are escaped and folded at 75 octets without splitting UTF-8. Includes X-Event-Count; excludes credentials and AI metadata. Tests cover escaping, all-day boundaries, CRLF and Unicode folding.
+- 검증: `go test ./...` 통과, `git diff --check` 통과. Export DB handler integration is not run because Docker is unavailable.

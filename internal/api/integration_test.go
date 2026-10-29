@@ -336,6 +336,52 @@ func TestAccountDeletionCleanupLeavesTombstoneAndBlocksWrites(t *testing.T) {
 	require.Equal(t, http.StatusGone, status, string(body))
 }
 
+func TestCloneScheduleCreatesFreshIdempotentSchedule(t *testing.T) {
+	srv, jwks := setupServer(t)
+	user := jwks.mint(t, uuid.New().String(), time.Hour)
+	otherUser := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", user, map[string]any{
+		"title": "original", "start_at": "2026-10-01T10:00:00Z", "end_at": "2026-10-01T11:00:00Z",
+		"source": "ai", "reminders": []map[string]any{{"minutes_before": 15, "channel": "telegram"}},
+	})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var source scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &source))
+	cloneURL := srv.URL + "/schedules/" + source.ID + "/clone"
+	call := func(token string) (int, []byte) {
+		req, err := http.NewRequest(http.MethodPost, cloneURL, strings.NewReader(`{"title":"copy","start_at":"2026-10-02T10:00:00Z"}`))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "clone-operation-1")
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		result, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, result
+	}
+	status, body = call(user)
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var clone scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &clone))
+	require.NotEqual(t, source.ID, clone.ID)
+	require.Equal(t, int64(1), clone.Revision)
+	require.Equal(t, "copy", clone.Title)
+	require.Equal(t, "confirmed", clone.Status)
+	require.Equal(t, "manual", clone.Source)
+	require.Len(t, clone.Reminders, 1)
+	require.NotEqual(t, source.Reminders[0].ID, clone.Reminders[0].ID)
+
+	status, body = call(user)
+	require.Equal(t, http.StatusCreated, status)
+	var replay scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &replay))
+	require.Equal(t, clone.ID, replay.ID, "exact idempotent retry returns the same clone")
+	status, _ = call(otherUser)
+	require.Equal(t, http.StatusNotFound, status, "source schedules are user-scoped")
+}
+
 func doRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {
 	t.Helper()
 	var etag string

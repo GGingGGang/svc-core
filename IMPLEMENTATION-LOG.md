@@ -30,3 +30,9 @@
 - OpenAPI YAML 파싱 통과.
 - Docker CLI/daemon을 사용할 수 없어 MySQL/NATS 컨테이너 통합 테스트는 실행하지 못했다.
 - DST 경계, 리마인더 instant, 내부 토큰 비교의 단위 테스트를 추가했다. DB 의존 validity 시나리오(메타데이터 revision 유지 및 변경 instant 거부)와 계정 삭제 통합 시나리오도 작성했으나 Docker 부재로 실행은 확인하지 못했다.
+
+## 최근 구현
+
+- `SCH-017`: `POST /schedules/{id}/clone`으로 소유자 범위 안에서 일정을 복제한다. 제목/설명/장소/시간/시간대/all-day 날짜를 선택적으로 덮어쓸 수 있고, 미지정 필드는 원본 값을 유지한다. 새 UUID·revision 1로 생성하며 상태는 `confirmed`, 출처는 `manual`로 초기화한다. 원본 알림 정의는 Notify capability에서 현재 검증된 Telegram 채널일 때만 복제하고, 키 재사용 본문 충돌은 409로 거절한다. 기존 추출·dispatch 이력은 복사하지 않는다. 통합 테스트는 새 일정 생성, 알림 ID 재발급, 동일 키 재시도 및 교차 사용자 404를 확인한다.
+- `AIX-016` API 응답 계약: 추출 후보 중복 의심 시 `needs_confirmation=true`, `issues`에 `possible_duplicate`를 포함한다. `duplicate_of` ID는 제공하지 않는다. 판정은 같은 사용자의 저장 일정 중 제목 trim/lower 일치 및 시간 구간 겹침이며 기존 일정을 수정하거나 삭제하지 않는다.
+- 검증: `go test ./...` 통과, `git diff --check` 통과. Docker 통합 테스트 실행 환경은 사용할 수 없어 실제 DB/NATS 통합 실행은 미검증이다.

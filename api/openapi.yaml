@@ -596,6 +596,56 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /schedules/{id}/clone:
+    parameters:
+      - $ref: "#/components/parameters/ScheduleId"
+    post:
+      tags: [Schedules]
+      summary: Clone a schedule into a new schedule
+      description: >-
+        Copies schedule fields and current reminder definitions to a new UUID.
+        Status resets to confirmed, source to manual, revision to 1, and prior
+        extraction/dispatch history is never copied. Optional Idempotency-Key
+        makes a retry replay the same new schedule.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloneScheduleRequest"
+      responses:
+        "201":
+          description: new schedule created
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Strong ETag containing the new schedule revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Idempotency conflict or no current verified and consented reminder channel.
+        "410":
+          description: Account deletion tombstone blocks writes for this account.
+        "422":
+          description: Local time is nonexistent or ambiguous without a fold choice.
+        "503":
+          description: Reminder channel validation is unavailable.
+
   /schedules/{id}/reminders:
     parameters:
       - $ref: "#/components/parameters/ScheduleId"
@@ -854,6 +904,48 @@ components:
           type: string
           format: date
           nullable: true
+
+    CloneScheduleRequest:
+      type: object
+      description: Optional fields override the source schedule; omitted values are copied.
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          maxLength: 255
+          nullable: true
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        local_start_at:
+          type: string
+        local_end_at:
+          type: string
+        timezone:
+          type: string
+        start_fold:
+          type: string
+          enum: [earlier, later]
+        end_fold:
+          type: string
+          enum: [earlier, later]
+        all_day:
+          type: boolean
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
 
     CreateScheduleRequest:
       type: object

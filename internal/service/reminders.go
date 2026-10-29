@@ -25,6 +25,9 @@ func validateReminderSet(reminders []ReminderInput) error {
 		if reminder.MinutesBefore < 0 || reminder.MinutesBefore > maxReminderMinutes {
 			return ErrInvalidReminder
 		}
+		if reminder.Channel != "telegram" {
+			return ErrInvalidReminder
+		}
 		key := fmt.Sprintf("%d:%s", reminder.MinutesBefore, reminder.Channel)
 		if _, ok := seen[key]; ok {
 			return ErrDuplicateReminder

@@ -237,6 +237,9 @@ type Schedule struct {
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 	Revision     int64           `json:"revision"`
+	Timezone     string          `json:"timezone"`
+	StartDate    sql.NullTime    `json:"start_date"`
+	EndDate      sql.NullTime    `json:"end_date"`
 }
 
 type ScheduleCreateRequest struct {

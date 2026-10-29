@@ -185,7 +185,7 @@ func setupServerWithPublisherWorker(t *testing.T, pub *events.Publisher, aiClnt 
 		tcmysql.WithDatabase("core"),
 		tcmysql.WithUsername("core_test"),
 		tcmysql.WithPassword("core_test"),
-		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql"),
+		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql", "../../db/migrations/000008_schedule_timezone_dates.up.sql", "../../db/migrations/000009_telegram_reminder_channel.up.sql"),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -217,14 +217,89 @@ func setupServerWithPublisherWorker(t *testing.T, pub *events.Publisher, aiClnt 
 		}()
 		t.Cleanup(func() { cancel(); <-done })
 	}
-	handler := api.NewHandler(coreService, func(ctx context.Context) error { return coredb.CheckReady(ctx, db) })
+	channels := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-internal-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		userID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/internal/users/"), "/channels")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"user_id":%q,"channels":[{"channel":"telegram","verified":true,"consent":true}]}`, userID)
+	}))
+	t.Cleanup(channels.Close)
+	authStatus := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-internal-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"active":true}`)
+	}))
+	t.Cleanup(authStatus.Close)
+	handler := api.NewHandlerWithInternal(coreService, func(ctx context.Context) error { return coredb.CheckReady(ctx, db) }, api.InternalServiceConfig{Token: "test-internal-token", AuthAccountStatusURL: authStatus.URL + "/internal/accounts", NotifyInternalBaseURL: channels.URL})
 	srv := httptest.NewServer(api.Router(handler, jwtAuth.Middleware))
 	t.Cleanup(srv.Close)
 	return srv, jwks, db
 }
 
+func TestReminderValidityIgnoresMetadataOnlyRevision(t *testing.T) {
+	srv, jwks := setupServer(t)
+	client := srv.Client()
+	userID := uuid.New().String()
+	token := jwks.mint(t, userID, time.Hour)
+	status, body := doRequest(t, client, http.MethodPost, srv.URL+"/schedules", token, map[string]any{
+		"title": "before", "start_at": "2026-10-01T10:00:00Z",
+		"reminders": []map[string]any{{"minutes_before": 30, "channel": "telegram"}},
+	})
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var created scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &created))
+	remindAt := created.StartAt.Add(-30 * time.Minute).Format(time.RFC3339)
+	validityURL := func() string {
+		return srv.URL + "/internal/reminders/" + created.ID + "/validity?user_id=" + userID + "&revision=1&minutes_before=30&channel=telegram&remind_at=" + url.QueryEscape(remindAt)
+	}
+	request := func() (int, map[string]any) {
+		req, err := http.NewRequest(http.MethodGet, validityURL(), nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer test-internal-token")
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var result map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+		return resp.StatusCode, result
+	}
+	status, result := request()
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, true, result["valid"])
+
+	status, body = doRequest(t, client, http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"title": "after"})
+	require.Equal(t, http.StatusOK, status, string(body))
+	status, result = request()
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, true, result["valid"], "a title-only update preserves the pending reminder instant")
+	require.EqualValues(t, 2, result["revision"], "the latest snapshot carries the incremented revision")
+	require.Equal(t, "after", result["title"])
+
+	status, body = doRequest(t, client, http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"start_at": "2026-10-01T11:00:00Z"})
+	require.Equal(t, http.StatusOK, status, string(body))
+	status, result = request()
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, false, result["valid"], "a changed reminder instant invalidates the old dispatch")
+}
+
 func doRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {
 	t.Helper()
+	var etag string
+	if method == http.MethodPatch {
+		getReq, err := http.NewRequest(http.MethodGet, url, nil)
+		require.NoError(t, err)
+		getReq.Header.Set("Authorization", "Bearer "+token)
+		getResp, err := client.Do(getReq)
+		require.NoError(t, err)
+		etag = getResp.Header.Get("ETag")
+		require.NoError(t, getResp.Body.Close())
+	}
 
 	var reader io.Reader
 	if body != nil {
@@ -240,6 +315,9 @@ func doRequest(t *testing.T, client *http.Client, method, url, token string, bod
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if etag != "" {
+		req.Header.Set("If-Match", etag)
 	}
 
 	resp, err := client.Do(req)
@@ -266,7 +344,7 @@ func TestSchedulesIntegration(t *testing.T) {
 			"start_at": "2026-08-01T06:00:00Z",
 			"all_day":  false,
 			"reminders": []map[string]any{
-				{"minutes_before": 30, "channel": "push"},
+				{"minutes_before": 30, "channel": "telegram"},
 			},
 		})
 		require.Equal(t, http.StatusCreated, status, string(body))
@@ -518,7 +596,7 @@ func TestScheduleEventRevisions(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &created))
 	status, body = doRequest(t, srv.Client(), http.MethodPatch, srv.URL+"/schedules/"+created.ID, token, map[string]any{"status": "cancelled"})
 	require.Equal(t, http.StatusOK, status, string(body))
-	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10, "channel": "email"})
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10, "channel": "telegram"})
 	require.Equal(t, http.StatusCreated, status, string(body))
 	var reminder reminderJSON
 	require.NoError(t, json.Unmarshal(body, &reminder))
@@ -551,7 +629,7 @@ func TestCreateScheduleIdempotency(t *testing.T) {
 	user := jwks.mint(t, uuid.New().String(), time.Hour)
 	otherUser := jwks.mint(t, uuid.New().String(), time.Hour)
 	key := uuid.New().String()
-	body := `{"title":"retry me","start_at":"2026-10-01T09:00:00Z","reminders":[{"minutes_before":15,"channel":"push"}]}`
+	body := `{"title":"retry me","start_at":"2026-10-01T09:00:00Z","reminders":[{"minutes_before":15,"channel":"telegram"}]}`
 	post := func(token, payload string) (int, scheduleJSON) {
 		t.Helper()
 		req, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules", bytes.NewBufferString(payload))
@@ -814,12 +892,12 @@ func TestReminderIdempotency(t *testing.T) {
 		require.NoError(t, err)
 		return resp.StatusCode, body
 	}
-	status, first := call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"email"}`)
+	status, first := call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"telegram"}`)
 	require.Equal(t, http.StatusCreated, status, string(first))
-	status, replay := call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"email"}`)
+	status, replay := call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"telegram"}`)
 	require.Equal(t, http.StatusCreated, status, string(replay))
 	require.JSONEq(t, string(first), string(replay))
-	status, _ = call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":20,"channel":"email"}`)
+	status, _ = call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":20,"channel":"telegram"}`)
 	require.Equal(t, http.StatusConflict, status)
 	var added reminderJSON
 	require.NoError(t, json.Unmarshal(first, &added))
@@ -827,7 +905,7 @@ func TestReminderIdempotency(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, status)
 	status, _ = call(http.MethodDelete, "/"+added.ID, "reminder-delete-key", "")
 	require.Equal(t, http.StatusNoContent, status)
-	status, _ = call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"email"}`)
+	status, _ = call(http.MethodPost, "", "reminder-add-key", `{"minutes_before":10,"channel":"telegram"}`)
 	require.Equal(t, http.StatusConflict, status, "deleted reminder must not appear as live")
 	var events int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM event_outbox").Scan(&events))
@@ -839,7 +917,7 @@ func TestReminderLimitsAndDuplicates(t *testing.T) {
 	token := jwks.mint(t, uuid.New().String(), time.Hour)
 	reminders := make([]map[string]any, 5)
 	for i := range reminders {
-		reminders[i] = map[string]any{"minutes_before": i, "channel": "push"}
+		reminders[i] = map[string]any{"minutes_before": i, "channel": "telegram"}
 	}
 	payload := map[string]any{"title": "limited", "start_at": "2026-10-01T09:00:00Z", "reminders": reminders}
 	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, payload)
@@ -847,17 +925,17 @@ func TestReminderLimitsAndDuplicates(t *testing.T) {
 	var created scheduleJSON
 	require.NoError(t, json.Unmarshal(body, &created))
 
-	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10080, "channel": "email"})
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10080, "channel": "telegram"})
 	require.Equal(t, http.StatusConflict, status, string(body), "the sixth reminder is rejected")
-	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 0, "channel": "push"})
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 0, "channel": "telegram"})
 	require.Equal(t, http.StatusConflict, status, string(body), "same offset and channel are rejected")
-	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10081, "channel": "email"})
+	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{"minutes_before": 10081, "channel": "telegram"})
 	require.Equal(t, http.StatusBadRequest, status)
 
-	tooMany := append(append([]map[string]any{}, reminders...), map[string]any{"minutes_before": 10080, "channel": "email"})
+	tooMany := append(append([]map[string]any{}, reminders...), map[string]any{"minutes_before": 10080, "channel": "telegram"})
 	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "too many", "start_at": "2026-10-02T09:00:00Z", "reminders": tooMany})
 	require.Equal(t, http.StatusConflict, status)
-	duplicate := []map[string]any{{"minutes_before": 10, "channel": "push"}, {"minutes_before": 10, "channel": "push"}}
+	duplicate := []map[string]any{{"minutes_before": 10, "channel": "telegram"}, {"minutes_before": 10, "channel": "telegram"}}
 	status, _ = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "duplicate", "start_at": "2026-10-03T09:00:00Z", "reminders": duplicate})
 	require.Equal(t, http.StatusConflict, status)
 }
@@ -871,8 +949,8 @@ func TestCreateScheduleRollsBackFailedReminder(t *testing.T) {
 	payload := map[string]any{
 		"title": "atomic save", "start_at": "2026-10-01T09:00:00Z",
 		"reminders": []map[string]any{
-			{"minutes_before": 10, "channel": "push"},
-			{"minutes_before": 20, "channel": "push"},
+			{"minutes_before": 10, "channel": "telegram"},
+			{"minutes_before": 20, "channel": "telegram"},
 		},
 	}
 	status, _ := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", user, payload)

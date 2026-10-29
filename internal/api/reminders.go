@@ -63,6 +63,9 @@ func (h *Handler) AddReminder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !h.checkReminderChannel(w, r, userID, []reminderRequest{req}) {
+		return
+	}
 	key, validKey := idempotencyKey(r)
 	if !validKey {
 		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")

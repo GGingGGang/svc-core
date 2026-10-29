@@ -1,35 +1,31 @@
 # svc-core 구현 기록
 
-## 이번 작업
+## 진행 중: 일정·리마인더 API 계약
 
-- opt-in 일정 조회를 추가했다. `q`는 제목/장소 literal substring 검색이며 `%`와 `_`도 와일드카드가 아닌 문자로 처리한다. `limit`은 1~100, 페이지 요청은 `from`/`to` 필수·역전 기간 거절·최대 366일이다. `(start_at,id)` keyset cursor는 사용자와 조회 필터에 묶여 다른 조건 또는 사용자에서 재사용하면 400이다. 페이지 응답은 항상 `schedules`와 `next_cursor`를 포함하며 마지막 값은 `null`; `q`/`cursor` 단독 입력은 400이다. 기존 `limit` 없는 조회와 응답은 유지한다.
-- 조회 SQL을 `db/queries/schedules.sql`에 추가하고 sqlc v1.31.1로 생성했다. sqlc 실행에는 `CGO_ENABLED=0`이 필요했다. 생성된 repo 산출물을 보존했다.
+- `VIW-003~012`: `GET /schedules`는 `from`/`to`가 필수이고 최대 366일 범위만 조회한다. 기본 `limit=20`, 허용 범위 1~100이며 `(start_at,id)` keyset cursor를 쓴다. cursor는 사용자·기간·상태·검색어·표시 timezone에 묶인다. `q`는 제목/장소 literal substring 검색이며 `%`와 `_`를 와일드카드로 처리하지 않는다. 응답에 `schedules`와 nullable `next_cursor`가 항상 있다. 시간 일정은 기간 중첩, 종일 일정은 표시 timezone 기준 현지 날짜 범위 중첩으로 계산한다. 레거시 비한정 목록은 폐지했다.
+- `SCH-010`: PATCH는 현재 revision을 포함한 강한 ETag의 `If-Match`를 요구한다. 새 요청의 오래된 revision은 412, 헤더 누락은 428이다. 동일 idempotency key와 동일 요청 본문/If-Match의 replay는 revision 비교보다 먼저 반환한다. 서로 다른 필드 PATCH는 행잠금 안에서 최신 행을 병합한다.
+- `SCH-015`: bulk-delete는 모든 ID가 요청 사용자에게 속할 때만 원자적으로 삭제한다. foreign/missing ID가 하나라도 있으면 전체를 404로 거절한다.
+- `SCH-017`: 복제 기능은 아직 구현하지 않았다. 안정된 요청·응답 계약과 회귀 검증이 남아 있다.
+- 날짜/시간: IANA timezone과 date-only 종일 일정의 `[start_date,end_date)`를 저장한다. 기존 timezone 없는 일정은 UTC로 간주하고 기존 종일 일정 날짜도 UTC instant에서 보정한다. 사용자 timezone 변경으로 날짜를 다시 계산하지 않는다. local datetime의 DST gap은 422, fold는 `earlier|later`를 요구한다. UTC RFC3339 입력도 지원한다.
+- `REM-002/003`: 일정당 리마인더는 최대 5개, offset은 0~10080분이며 중복 offset/channel은 409다. 신규 저장 채널은 Telegram만 허용하고 Notify의 내부 capability API에서 사용자 소유의 verified+consented 연결을 확인한다. 빈 목록은 리마인더 없음이다. 기존 push/email/none 행은 마이그레이션에서 제거하지 않는다.
+- 내부 dispatch 검증: `/internal/reminders/{scheduleID}/validity`는 상수시간 Bearer 비교, 현재 일정/소유자/상태/리마인더, Auth 계정 활성 상태를 확인한다. revision이 달라져도 현재 channel+offset과 계산한 `remind_at`이 요청값과 같으면 유효하며 최신 일정 snapshot을 돌려준다. 시간/채널/상태 변경, 삭제, 비활성 계정은 `valid:false`다. 종일 일정의 dispatch 시각은 일정 timezone의 시작일 09:00에서 offset을 뺀 instant다.
 
-- PATCH 요청에서 API가 현재 일정을 먼저 읽어 생략 필드를 채우던 동작을 제거했다. 서비스가 트랜잭션 안에서 일정 행을 잠근 뒤 최신 행을 읽고, 전달된 필드만 병합해 저장한다. 서로 다른 필드를 동시에 수정해도 나중 요청이 앞 요청의 값을 되돌리지 않는다. REST 응답과 이벤트 payload는 바꾸지 않았다.
-- 리마인더 정책 `POL-19` / `REM-002`를 서버에서 적용한다. 일정 생성 시 최대 5개·중복 조합·분 범위를 검사하고, 리마인더 추가 시 일정 행 잠금 안에서 현재 개수와 중복을 검사한다. 6번째와 같은 `(minutes_before, channel)`은 409, 0~10,080분 밖의 입력은 400이다. 기존 DB 행은 삭제하거나 수정하지 않는다.
-- 회귀 통합 테스트를 추가했다: 동시 PATCH가 title과 location 변경을 모두 보존하는지, 리마인더 5개 한도·중복·범위 및 생성 시 잘못된 목록을 확인한다.
+## AI 원문 보존
+
+- `AIX-017`: 새 extraction의 원문과 결과 JSON은 DB에 저장하지 않고 메타데이터만 남긴다. 기존 데이터를 migration에서 자동 삭제하지 않는다. `cmd/cleanup-extractions`는 필수 cutoff를 받아 기본 dry-run으로 대상 수를 보여주고, 명시적인 `--apply`에서만 cutoff 이전 원문/결과를 지운다. 기존 데이터 정리 실행은 운영 작업으로 남겨 두었다.
+- `KEY-002`: BYOK 사용의 인증/요금제 우회 금지 및 공급자 오류 동작은 기존 AI 경로를 유지한다. 이번 변경은 extraction 원문 저장 여부에 한정한다.
+
+## 남은 요구사항
+
+- `SCH-017`: 일정 복제 API/검증/테스트.
+- `EXT-001~009`: 반복 규칙·예외·ICS export와 import-preview/명시적 확정 저장은 미구현이다. 외부 임의 URL fetch를 허용하지 않는 preview ID/소유권/만료/중복 처리 계약과 bounded 반복 정책을 확정하고 구현해야 한다.
+- `AIX-016`: 문서에 정의된 중복 감지 동작 및 중복 확인 회귀 테스트가 남아 있다.
+- `POL-29`/계정 삭제: Auth의 삭제 요청 구독, durable user tombstone, 일정·리마인더·추출·멱등 응답·outbox·preview·반복 데이터의 트랜잭션 cleanup 및 ACK는 아직 미구현이다.
 
 ## 검증
 
-- `gofmt` 적용.
-- `go test ./...` 성공.
-- `go test -tags=integration -run '^$' ./internal/api` 성공(통합 테스트 컴파일 확인).
-- OpenAPI YAML 파싱 성공. PATCH description/location 상한은 기존 코드포인트 기준 Unicode 경계 테스트(이모지 10,000/10,001, 한글 255/256)를 유지하며 HTTP 통합 테스트에도 400 검증을 추가했다.
-- 페이지 통합 테스트에 같은 시작 시각의 keyset 이동, 사용자 격리, `%`/`_` literal 검색, 다른 필터 cursor 거절을 넣었다.
-- sqlc v1.31.1 생성 성공(`CGO_ENABLED=0`); 생성된 repo 모델과 query 코드를 보존했다.
-- 통합 태그 compile-only 검증까지 성공했다. 실 통합 테스트는 Docker CLI 부재로 실행하지 못했다.
-- Docker 통합 테스트 실행은 환경에 `docker` 명령이 없어 수행할 수 없다. 따라서 새 실 MySQL 동시성 및 리마인더 통합 시나리오는 컴파일만 확인했다.
-
-## 남은 core 요구사항
-
-- `POL-13`, `VIW-003~006`: opt-in 페이지 조회는 구현했지만 기존 `limit` 없는 경로는 무제한·레거시 응답으로 유지한다. 모든 요청에 기본 20/최대 100건과 366일 하드 제한을 적용했다고 볼 수 없다. 레거시 경로 제거·강제는 별도 버전 계약 단계가 필요하다. 목록은 기존 시작 시각 기준이며 일정 기간 겹침 조회는 미구현이다.
-- `SCH-010`: PATCH 내부 병합의 변경 유실은 막았지만 오래된 화면의 수정 자체를 409/412로 막는 revision/ETag 조건부 수정 계약은 미구현이다. 응답 revision과 요청 전제조건이 REST 계약 변경을 요구한다.
-- `AIX-017`: `ai_extractions` 원문·결과의 보존기간/기본 미보관 정책이 확정되지 않았고 정리 작업도 없다. 보존/동의 정책을 먼저 합의해야 한다.
-- `REM-003~009`, `REM-011~012`: 지원 채널·tentative·종일 기준 시각·과거 알림·취소/재확정·재시도 및 중복 발송 정책은 core 단독으로 완결할 수 없거나 batch/web/notify 계약과 구현이 필요하다. 실제 발송은 비활성 상태다.
-- `POL-29` 및 계정 탈퇴 데이터 정리: auth/core/batch가 소유한 데이터의 정리·백업 보존 정책이 필요하므로 이 서비스에서 임의로 구현하지 않았다.
-
-## 계약 결정 및 후속 제안
-
-- 목록 계약: `GET /schedules?from=&to=&status=&q=&limit=&cursor=`. 웹 기간 검색 요청은 `limit=20`을 사용한다. 선택 검색은 제목/장소 literal substring이다. paginated 응답에는 `next_cursor`가 항상 있으며 값은 string 또는 null이다. 기존 limit 없는 응답 형태는 유지한다. 레거시 무제한 경로 제거는 후속 버전 계약 변경이다.
-- `SCH-010`을 완결하려면 응답 revision/ETag와 조건부 수정 요청을 추가해 오래된 화면의 수정 자체를 거절하는 계약 결정이 필요하다.
-- PATCH 병합 위치와 리마인더 검증은 내부 동작이며 기존 REST 및 NATS 계약을 유지한다.
+- `go test ./...` 통과.
+- `go test -tags=integration -run '^$' ./internal/api ./internal/db` 통과(통합 테스트 컴파일 확인).
+- OpenAPI YAML 파싱 통과.
+- Docker CLI/daemon을 사용할 수 없어 MySQL/NATS 컨테이너 통합 테스트는 실행하지 못했다.
+- DST 경계, 리마인더 instant, 내부 토큰 비교의 단위 테스트를 추가했다. DB 의존 validity 시나리오(메타데이터 revision 유지 및 변경 instant 거부)는 통합 테스트에 작성했으나 Docker 부재로 실행은 확인하지 못했다.

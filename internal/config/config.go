@@ -29,6 +29,9 @@ type Config struct {
 	// explicitly per deployment.
 	JWKSURL           string `env:"JWKS_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/.well-known/jwks.json"`
 	AuthIntrospectURL string `env:"AUTH_INTROSPECT_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/introspect"`
+	AuthAccountStatusURL string `env:"AUTH_ACCOUNT_STATUS_URL" envDefault:"http://auth.auth.svc.cluster.local:3000/internal/accounts"`
+	NotifyInternalBaseURL string `env:"NOTIFY_INTERNAL_BASE_URL" envDefault:"http://notify.notify.svc.cluster.local:8080"`
+	InternalServiceToken string `env:"INTERNAL_SERVICE_TOKEN"`
 	JWTIssuer         string `env:"JWT_ISSUER,required"`
 	JWTAudience       string `env:"JWT_AUDIENCE" envDefault:"core"`
 

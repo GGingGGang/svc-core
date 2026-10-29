@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log"
 	"time"
@@ -41,19 +40,13 @@ func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in Ext
 
 	status := repo.AiExtractionsStatusSuccess
 	var candidates []ExtractCandidate
-	var resultJSON []byte
 	if extractErr != nil {
 		status = repo.AiExtractionsStatusFailed
 	} else {
 		candidates = toExtractCandidates(result.Candidates)
-		var marshalErr error
-		resultJSON, marshalErr = json.Marshal(result)
-		if marshalErr != nil {
-			log.Printf("ERROR marshal extraction result for audit row failed")
-		}
 	}
 
-	s.recordExtraction(ctx, userID, in.Text, resultJSON, status, latencyMs)
+	s.recordExtraction(ctx, userID, len(in.Text), status, latencyMs)
 
 	if extractErr != nil {
 		if errors.Is(extractErr, ai.ErrMissingAPIKey) {
@@ -127,25 +120,18 @@ func (s *Service) finishExtraction(id uuid.UUID) {
 	}
 }
 
-func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, rawText string, resultJSON []byte, status repo.AiExtractionsStatus, latencyMs int32) {
+func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, inputBytes int, status repo.AiExtractionsStatus, latencyMs int32) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		log.Printf("ERROR generate ai_extractions id failed")
 		return
 	}
 
-	var resultJSONParam json.RawMessage
-	if len(resultJSON) > 0 {
-		resultJSONParam = resultJSON
-	}
-
 	if err := s.q.CreateExtraction(ctx, repo.CreateExtractionParams{
 		ID:         idBytes(id),
 		UserID:     idBytes(userID),
 		Model:      s.aiClnt.Model(),
-		InputChars: int32(len(rawText)),
-		RawText:    sql.NullString{String: rawText, Valid: true},
-		ResultJson: resultJSONParam,
+		InputChars: int32(inputBytes),
 		Status:     status,
 		LatencyMs:  sql.NullInt32{Int32: latencyMs, Valid: true},
 	}); err != nil {

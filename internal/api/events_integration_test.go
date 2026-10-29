@@ -62,7 +62,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 	createBody, err := json.Marshal(map[string]any{
 		"title":     "이벤트 테스트",
 		"start_at":  "2026-08-10T06:00:00Z",
-		"reminders": []map[string]any{{"minutes_before": 15, "channel": "push"}},
+		"reminders": []map[string]any{{"minutes_before": 15, "channel": "telegram"}},
 	})
 	require.NoError(t, err)
 	createReq, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules", bytes.NewReader(createBody))
@@ -134,7 +134,7 @@ func TestSchedulesPublishDomainEvents(t *testing.T) {
 
 	// add reminder → updated.v1, snapshot now has both reminders.
 	status, body = doRequest(t, client, http.MethodPost, srv.URL+"/schedules/"+created.ID+"/reminders", token, map[string]any{
-		"minutes_before": 5, "channel": "email",
+		"minutes_before": 5, "channel": "telegram",
 	})
 	require.Equal(t, http.StatusCreated, status, string(body))
 	var addedReminder reminderJSON

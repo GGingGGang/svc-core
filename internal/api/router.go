@@ -25,6 +25,7 @@ func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Han
 	r.Get("/status", h.status)
 	r.Handle("/metrics", promhttp.Handler())
 	r.Get("/openapi.yaml", serveOpenAPISpec)
+	r.Get("/internal/reminders/{scheduleID}/validity", h.reminderValidity)
 
 	r.Route("/schedules", func(r chi.Router) {
 		r.Use(authMiddleware)

@@ -18,6 +18,9 @@ import (
 )
 
 func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in CreateScheduleInput) (*Schedule, error) {
+	if in.Timezone == "" {
+		in.Timezone = "UTC"
+	}
 	if err := validateReminderSet(in.Reminders); err != nil {
 		return nil, err
 	}
@@ -56,6 +59,9 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 		StartAt:      in.StartAt,
 		EndAt:        nullTime(in.EndAt),
 		AllDay:       in.AllDay,
+		Timezone:     in.Timezone,
+		StartDate:    nullDate(in.StartDate),
+		EndDate:      nullDate(in.EndDate),
 		Status:       repo.SchedulesStatus(status),
 		Source:       repo.SchedulesSource(source),
 		ExtractionID: extractionIDToNullString(in.ExtractionID),
@@ -222,7 +228,7 @@ func (s *Service) ListSchedules(ctx context.Context, userID uuid.UUID, from, to 
 	return schedules, nil
 }
 
-func (s *Service) ListSchedulesPage(ctx context.Context, userID uuid.UUID, from, to time.Time, status *string, query string, cursor *ScheduleCursor, limit int) ([]*Schedule, bool, error) {
+func (s *Service) ListSchedulesPage(ctx context.Context, userID uuid.UUID, from, to time.Time, fromDate, toDate string, status *string, query string, cursor *ScheduleCursor, limit int) ([]*Schedule, bool, error) {
 	var statusParam repo.NullSchedulesStatus
 	if status != nil {
 		statusParam = repo.NullSchedulesStatus{SchedulesStatus: repo.SchedulesStatus(*status), Valid: true}
@@ -235,8 +241,12 @@ func (s *Service) ListSchedulesPage(ctx context.Context, userID uuid.UUID, from,
 	}
 	rows, err := s.q.ListSchedulesPage(ctx, repo.ListSchedulesPageParams{
 		UserID:        idBytes(userID),
+		StartDate:     dateBound(toDate),
+		EndDate:       dateBound(fromDate),
 		StartAt:       from,
 		StartAt_2:     to,
+		StartAt_3:     to,
+		EndAt:         sql.NullTime{Time: from, Valid: true},
 		Status:        statusParam,
 		Query:         query,
 		CursorStartAt: cursorStartAt,
@@ -259,6 +269,11 @@ func (s *Service) ListSchedulesPage(ctx context.Context, userID uuid.UUID, from,
 		schedules = append(schedules, sch)
 	}
 	return schedules, hasMore, nil
+}
+
+func dateBound(value string) sql.NullTime {
+	date, err := time.Parse("2006-01-02", value)
+	return sql.NullTime{Time: date, Valid: err == nil}
 }
 
 // UpdateSchedule merges the patch after locking the row so concurrent changes
@@ -286,14 +301,18 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, patc
 		}
 	}
 	q := s.q.WithTx(tx)
-	if _, err := lockScheduleRevision(ctx, tx, userID, id); err != nil {
+	revision, err := lockScheduleRevision(ctx, tx, userID, id)
+	if err != nil {
 		return nil, err
+	}
+	if patch.ExpectedRevision != nil && revision != *patch.ExpectedRevision {
+		return nil, ErrRevisionConflict
 	}
 	before, err := getSchedule(ctx, q, userID, id)
 	if err != nil {
 		return nil, err
 	}
-	fields := ScheduleFields{Title: before.Title, Description: before.Description, Location: before.Location, StartAt: before.StartAt, EndAt: before.EndAt, AllDay: before.AllDay, Status: before.Status}
+	fields := ScheduleFields{Title: before.Title, Description: before.Description, Location: before.Location, StartAt: before.StartAt, EndAt: before.EndAt, AllDay: before.AllDay, Timezone: before.Timezone, StartDate: before.StartDate, EndDate: before.EndDate, Status: before.Status}
 	if patch.Title != nil {
 		fields.Title = *patch.Title
 	}
@@ -315,6 +334,46 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, patc
 	if patch.Status != nil {
 		fields.Status = *patch.Status
 	}
+	if patch.Timezone != nil {
+		fields.Timezone = *patch.Timezone
+	}
+	if patch.StartDate != nil {
+		fields.StartDate = *patch.StartDate
+	}
+	if patch.EndDate != nil {
+		fields.EndDate = *patch.EndDate
+	}
+	if fields.Timezone == "" {
+		fields.Timezone = "UTC"
+	}
+	if fields.AllDay {
+		zone, err := time.LoadLocation(fields.Timezone)
+		if err != nil {
+			return nil, ErrInvalidSchedule
+		}
+		if fields.StartDate == nil {
+			value := fields.StartAt.In(zone).Format("2006-01-02")
+			fields.StartDate = &value
+		}
+		if fields.EndDate == nil {
+			start, err := time.Parse("2006-01-02", *fields.StartDate)
+			if err != nil {
+				return nil, ErrInvalidSchedule
+			}
+			value := start.AddDate(0, 0, 1).Format("2006-01-02")
+			fields.EndDate = &value
+		}
+		start, startErr := time.Parse("2006-01-02", *fields.StartDate)
+		end, endErr := time.Parse("2006-01-02", *fields.EndDate)
+		if startErr != nil || endErr != nil || !end.After(start) {
+			return nil, ErrInvalidSchedule
+		}
+		fields.StartAt = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, zone).UTC()
+		endAt := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, zone).UTC()
+		fields.EndAt = &endAt
+	} else {
+		fields.StartDate, fields.EndDate = nil, nil
+	}
 	if fields.EndAt != nil && fields.EndAt.Sub(fields.StartAt) < time.Millisecond {
 		return nil, ErrInvalidSchedule
 	}
@@ -326,6 +385,9 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, patc
 		StartAt:     fields.StartAt,
 		EndAt:       nullTime(fields.EndAt),
 		AllDay:      fields.AllDay,
+		Timezone:    fields.Timezone,
+		StartDate:   nullDate(fields.StartDate),
+		EndDate:     nullDate(fields.EndDate),
 		Status:      repo.SchedulesStatus(fields.Status),
 		ID:          idBytes(id),
 		UserID:      idBytes(userID),
@@ -423,13 +485,8 @@ func claimScheduleMutation(ctx context.Context, tx *sql.Tx, userID, scheduleID u
 	return response, true, nil
 }
 
-// BulkDeleteSchedules deletes only the ids owned by userID and reports how
-// many rows were actually removed; ids belonging to another user (or
-// nonexistent) are silently excluded from the count rather than erroring,
-// matching the hard-delete/idempotent nature of the endpoint. A
-// schedules.deleted.v1 event is published per id actually removed — the
-// caller-supplied id list may include ids that never belonged to this user,
-// which must not be reported as deleted.
+// BulkDeleteSchedules is all-or-nothing: every requested ID must be owned by
+// the caller and remain present after its row lock is acquired.
 func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids []uuid.UUID, key string, requestHash [32]byte) (int64, error) {
 	idList := make([][]byte, len(ids))
 	for i, id := range ids {
@@ -459,6 +516,9 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 	if err != nil {
 		return 0, err
 	}
+	if len(owned) != len(ids) {
+		return 0, ErrNotFound
+	}
 	sort.Slice(owned, func(i, j int) bool { return bytes.Compare(owned[i], owned[j]) < 0 })
 	revisions := make(map[uuid.UUID]int64, len(owned))
 	for _, raw := range owned {
@@ -467,9 +527,6 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 			return 0, err
 		}
 		revision, err := lockScheduleRevision(ctx, tx, userID, id)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
 		if err != nil {
 			return 0, err
 		}
@@ -492,7 +549,7 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 		}
 		revision, ok := revisions[id]
 		if !ok {
-			continue
+			return 0, ErrNotFound
 		}
 		if err := enqueueDeletedEvent(ctx, tx, id, userID, occurredAt, revision); err != nil {
 			return 0, err

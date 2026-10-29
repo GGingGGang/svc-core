@@ -11,6 +11,7 @@ package api_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -114,6 +115,11 @@ func TestExtractIntegration(t *testing.T) {
 			}
 			return count == 1
 		}, 5*time.Second, 100*time.Millisecond, "a success ai_extractions row should be recorded")
+		var rawText sql.NullString
+		var resultJSON []byte
+		require.NoError(t, db.QueryRow("SELECT raw_text, result_json FROM ai_extractions WHERE status = 'success'").Scan(&rawText, &resultJSON))
+		require.False(t, rawText.Valid, "extraction input must not be retained")
+		require.Empty(t, resultJSON, "extraction output must not be retained")
 		var schedules int
 		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schedules").Scan(&schedules))
 		require.Zero(t, schedules, "extraction alone must not save a schedule")

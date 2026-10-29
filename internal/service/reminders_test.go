@@ -12,12 +12,12 @@ func TestValidateReminderSet(t *testing.T) {
 		wantErr   error
 	}{
 		{name: "empty is allowed"},
-		{name: "five is allowed", reminders: []ReminderInput{{0, "push"}, {1, "push"}, {2, "email"}, {3, "none"}, {10080, "push"}}},
-		{name: "six is rejected", reminders: []ReminderInput{{0, "push"}, {1, "push"}, {2, "push"}, {3, "push"}, {4, "push"}, {5, "push"}}, wantErr: ErrReminderLimit},
-		{name: "same offset and channel is rejected", reminders: []ReminderInput{{10, "push"}, {10, "push"}}, wantErr: ErrDuplicateReminder},
-		{name: "same offset on another channel is allowed", reminders: []ReminderInput{{10, "push"}, {10, "email"}}},
-		{name: "negative offset is rejected", reminders: []ReminderInput{{-1, "push"}}, wantErr: ErrInvalidReminder},
-		{name: "over seven days is rejected", reminders: []ReminderInput{{10081, "push"}}, wantErr: ErrInvalidReminder},
+		{name: "five is allowed", reminders: []ReminderInput{{0, "telegram"}, {1, "telegram"}, {2, "telegram"}, {3, "telegram"}, {10080, "telegram"}}},
+		{name: "six is rejected", reminders: []ReminderInput{{0, "telegram"}, {1, "telegram"}, {2, "telegram"}, {3, "telegram"}, {4, "telegram"}, {5, "telegram"}}, wantErr: ErrReminderLimit},
+		{name: "same offset and channel is rejected", reminders: []ReminderInput{{10, "telegram"}, {10, "telegram"}}, wantErr: ErrDuplicateReminder},
+		{name: "unsupported channel is rejected", reminders: []ReminderInput{{10, "email"}}, wantErr: ErrInvalidReminder},
+		{name: "negative offset is rejected", reminders: []ReminderInput{{-1, "telegram"}}, wantErr: ErrInvalidReminder},
+		{name: "over seven days is rejected", reminders: []ReminderInput{{10081, "telegram"}}, wantErr: ErrInvalidReminder},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

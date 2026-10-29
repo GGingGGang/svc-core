@@ -28,7 +28,7 @@ func TestNormalizeTitle(t *testing.T) {
 func TestScheduleCursorIsBoundToFilters(t *testing.T) {
 	start := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	id := uuid.New()
-	filter := listFilterHash("user", start.Add(-time.Hour), start.Add(time.Hour), nil, "review")
+	filter := listFilterHash("user", start.Add(-time.Hour), start.Add(time.Hour), nil, "review", "UTC")
 	token := encodeScheduleCursor(start, id, filter)
 	cursor, err := decodeScheduleCursor(token, filter)
 	if err != nil || cursor.ID != id || !cursor.StartAt.Equal(start) {

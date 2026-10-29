@@ -8,7 +8,6 @@ package repo
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"strings"
 	"time"
 )
@@ -38,7 +37,7 @@ func (q *Queries) AddReminder(ctx context.Context, arg AddReminderParams) error 
 const createExtraction = `-- name: CreateExtraction :exec
 INSERT INTO ai_extractions (
   id, user_id, model, input_chars, raw_text, result_json, status, latency_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
 `
 
 type CreateExtractionParams struct {
@@ -46,8 +45,6 @@ type CreateExtractionParams struct {
 	UserID     []byte              `json:"user_id"`
 	Model      string              `json:"model"`
 	InputChars int32               `json:"input_chars"`
-	RawText    sql.NullString      `json:"raw_text"`
-	ResultJson json.RawMessage     `json:"result_json"`
 	Status     AiExtractionsStatus `json:"status"`
 	LatencyMs  sql.NullInt32       `json:"latency_ms"`
 }
@@ -58,8 +55,6 @@ func (q *Queries) CreateExtraction(ctx context.Context, arg CreateExtractionPara
 		arg.UserID,
 		arg.Model,
 		arg.InputChars,
-		arg.RawText,
-		arg.ResultJson,
 		arg.Status,
 		arg.LatencyMs,
 	)
@@ -68,8 +63,8 @@ func (q *Queries) CreateExtraction(ctx context.Context, arg CreateExtractionPara
 
 const createSchedule = `-- name: CreateSchedule :exec
 INSERT INTO schedules (
-  id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  id, user_id, title, description, location, start_at, end_at, all_day, timezone, start_date, end_date, status, source, extraction_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateScheduleParams struct {
@@ -81,6 +76,9 @@ type CreateScheduleParams struct {
 	StartAt      time.Time       `json:"start_at"`
 	EndAt        sql.NullTime    `json:"end_at"`
 	AllDay       bool            `json:"all_day"`
+	Timezone     string          `json:"timezone"`
+	StartDate    sql.NullTime    `json:"start_date"`
+	EndDate      sql.NullTime    `json:"end_date"`
 	Status       SchedulesStatus `json:"status"`
 	Source       SchedulesSource `json:"source"`
 	ExtractionID sql.NullString  `json:"extraction_id"`
@@ -96,6 +94,9 @@ func (q *Queries) CreateSchedule(ctx context.Context, arg CreateScheduleParams) 
 		arg.StartAt,
 		arg.EndAt,
 		arg.AllDay,
+		arg.Timezone,
+		arg.StartDate,
+		arg.EndDate,
 		arg.Status,
 		arg.Source,
 		arg.ExtractionID,
@@ -169,7 +170,7 @@ func (q *Queries) DeleteSchedulesByIDs(ctx context.Context, arg DeleteSchedulesB
 }
 
 const getSchedule = `-- name: GetSchedule :one
-SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision FROM schedules
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision, timezone, start_date, end_date FROM schedules
 WHERE id = ? AND user_id = ?
 `
 
@@ -196,6 +197,9 @@ func (q *Queries) GetSchedule(ctx context.Context, arg GetScheduleParams) (*Sche
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Revision,
+		&i.Timezone,
+		&i.StartDate,
+		&i.EndDate,
 	)
 	return &i, err
 }
@@ -280,7 +284,7 @@ func (q *Queries) ListScheduleIDsByIDs(ctx context.Context, arg ListScheduleIDsB
 }
 
 const listSchedules = `-- name: ListSchedules :many
-SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision FROM schedules
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision, timezone, start_date, end_date FROM schedules
 WHERE user_id = ?
   AND start_at >= ?
   AND start_at < ?
@@ -325,6 +329,9 @@ func (q *Queries) ListSchedules(ctx context.Context, arg ListSchedulesParams) ([
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Revision,
+			&i.Timezone,
+			&i.StartDate,
+			&i.EndDate,
 		); err != nil {
 			return nil, err
 		}
@@ -340,11 +347,12 @@ func (q *Queries) ListSchedules(ctx context.Context, arg ListSchedulesParams) ([
 }
 
 const listSchedulesPage = `-- name: ListSchedulesPage :many
-SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision
+SELECT id, user_id, title, description, location, start_at, end_at, all_day, status, source, extraction_id, created_at, updated_at, revision, timezone, start_date, end_date
 FROM schedules
 WHERE user_id = ?
-  AND start_at >= ?
-  AND start_at < ?
+  AND ((all_day = 1 AND start_date < ? AND end_date > ?)
+    OR (all_day = 0 AND ((end_at IS NULL AND start_at >= ? AND start_at < ?)
+      OR (end_at IS NOT NULL AND start_at < ? AND end_at > ?))))
   AND (? IS NULL OR status = ?)
   AND (? = '' OR LOCATE(?, title) > 0 OR LOCATE(?, COALESCE(location, '')) > 0)
   AND (? IS NULL OR start_at > ? OR (start_at = ? AND id > ?))
@@ -354,8 +362,12 @@ LIMIT ?
 
 type ListSchedulesPageParams struct {
 	UserID        []byte              `json:"user_id"`
+	StartDate     sql.NullTime        `json:"start_date"`
+	EndDate       sql.NullTime        `json:"end_date"`
 	StartAt       time.Time           `json:"start_at"`
 	StartAt_2     time.Time           `json:"start_at_2"`
+	StartAt_3     time.Time           `json:"start_at_3"`
+	EndAt         sql.NullTime        `json:"end_at"`
 	Status        NullSchedulesStatus `json:"status"`
 	Query         string              `json:"query"`
 	CursorStartAt sql.NullTime        `json:"cursor_start_at"`
@@ -366,8 +378,12 @@ type ListSchedulesPageParams struct {
 func (q *Queries) ListSchedulesPage(ctx context.Context, arg ListSchedulesPageParams) ([]*Schedule, error) {
 	rows, err := q.db.QueryContext(ctx, listSchedulesPage,
 		arg.UserID,
+		arg.StartDate,
+		arg.EndDate,
 		arg.StartAt,
 		arg.StartAt_2,
+		arg.StartAt_3,
+		arg.EndAt,
 		arg.Status,
 		arg.Status,
 		arg.Query,
@@ -401,6 +417,9 @@ func (q *Queries) ListSchedulesPage(ctx context.Context, arg ListSchedulesPagePa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Revision,
+			&i.Timezone,
+			&i.StartDate,
+			&i.EndDate,
 		); err != nil {
 			return nil, err
 		}
@@ -423,6 +442,9 @@ SET title       = ?,
     start_at    = ?,
     end_at      = ?,
     all_day     = ?,
+    timezone    = ?,
+    start_date  = ?,
+    end_date    = ?,
     status      = ?,
     revision    = revision + 1
 WHERE id = ? AND user_id = ?
@@ -435,6 +457,9 @@ type UpdateScheduleParams struct {
 	StartAt     time.Time       `json:"start_at"`
 	EndAt       sql.NullTime    `json:"end_at"`
 	AllDay      bool            `json:"all_day"`
+	Timezone    string          `json:"timezone"`
+	StartDate   sql.NullTime    `json:"start_date"`
+	EndDate     sql.NullTime    `json:"end_date"`
 	Status      SchedulesStatus `json:"status"`
 	ID          []byte          `json:"id"`
 	UserID      []byte          `json:"user_id"`
@@ -448,6 +473,9 @@ func (q *Queries) UpdateSchedule(ctx context.Context, arg UpdateScheduleParams) 
 		arg.StartAt,
 		arg.EndAt,
 		arg.AllDay,
+		arg.Timezone,
+		arg.StartDate,
+		arg.EndDate,
 		arg.Status,
 		arg.ID,
 		arg.UserID,

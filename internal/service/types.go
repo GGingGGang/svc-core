@@ -16,6 +16,9 @@ type Schedule struct {
 	StartAt      time.Time
 	EndAt        *time.Time
 	AllDay       bool
+	Timezone     string
+	StartDate    *string
+	EndDate      *string
 	Status       string
 	Source       string
 	ExtractionID *uuid.UUID
@@ -28,13 +31,17 @@ type Schedule struct {
 // SchedulePatch contains only supplied fields. Pointer-to-pointer fields
 // distinguish omission from an explicit null that clears a nullable column.
 type SchedulePatch struct {
-	Title       *string
-	Description **string
-	Location    **string
-	StartAt     *time.Time
-	EndAt       **time.Time
-	AllDay      *bool
-	Status      *string
+	ExpectedRevision *int64
+	Title            *string
+	Description      **string
+	Location         **string
+	StartAt          *time.Time
+	EndAt            **time.Time
+	AllDay           *bool
+	Timezone         *string
+	StartDate        **string
+	EndDate          **string
+	Status           *string
 }
 
 type ScheduleFields struct {
@@ -44,6 +51,9 @@ type ScheduleFields struct {
 	StartAt     time.Time
 	EndAt       *time.Time
 	AllDay      bool
+	Timezone    string
+	StartDate   *string
+	EndDate     *string
 	Status      string
 }
 
@@ -60,6 +70,9 @@ type CreateScheduleInput struct {
 	StartAt        time.Time
 	EndAt          *time.Time
 	AllDay         bool
+	Timezone       string
+	StartDate      *string
+	EndDate        *string
 	Status         string
 	Source         string
 	ExtractionID   *uuid.UUID

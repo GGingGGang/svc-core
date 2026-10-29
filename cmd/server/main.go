@@ -67,9 +67,9 @@ func main() {
 
 	coreService := service.New(sqlDB, publisher, aiClient)
 	go coreService.RunOutbox(ctx)
-	handler := api.NewHandler(coreService, func(ctx context.Context) error {
+	handler := api.NewHandlerWithInternal(coreService, func(ctx context.Context) error {
 		return db.CheckReady(ctx, sqlDB)
-	})
+	}, api.InternalServiceConfig{Token: cfg.InternalServiceToken, AuthAccountStatusURL: cfg.AuthAccountStatusURL, NotifyInternalBaseURL: cfg.NotifyInternalBaseURL})
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,

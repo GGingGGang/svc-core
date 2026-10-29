@@ -50,7 +50,7 @@ type reminderRequest struct {
 	// no "required" here: 0 (remind exactly at start_at) is a valid value
 	// and validator's required treats the zero value as absent.
 	MinutesBefore int32  `json:"minutes_before" validate:"gte=0,lte=10080"`
-	Channel       string `json:"channel" validate:"required,oneof=push email none"`
+	Channel       string `json:"channel" validate:"required,oneof=telegram"`
 }
 
 type reminderResponse struct {
@@ -75,9 +75,16 @@ type createScheduleRequest struct {
 	Title        string            `json:"title" validate:"required,max=255"`
 	Description  *string           `json:"description,omitempty"`
 	Location     *string           `json:"location,omitempty" validate:"omitempty,max=255"`
-	StartAt      time.Time         `json:"start_at" validate:"required"`
+	StartAt      *time.Time        `json:"start_at,omitempty"`
 	EndAt        *time.Time        `json:"end_at,omitempty"`
 	AllDay       bool              `json:"all_day"`
+	Timezone     string            `json:"timezone,omitempty"`
+	StartDate    *string           `json:"start_date,omitempty"`
+	EndDate      *string           `json:"end_date,omitempty"`
+	LocalStartAt *string           `json:"local_start_at,omitempty"`
+	LocalEndAt   *string           `json:"local_end_at,omitempty"`
+	StartFold    string            `json:"start_fold,omitempty" validate:"omitempty,oneof=earlier later"`
+	EndFold      string            `json:"end_fold,omitempty" validate:"omitempty,oneof=earlier later"`
 	Status       string            `json:"status,omitempty" validate:"omitempty,oneof=confirmed tentative cancelled"`
 	Source       string            `json:"source,omitempty" validate:"omitempty,oneof=manual ai"`
 	ExtractionID *string           `json:"extraction_id,omitempty" validate:"omitempty,uuid"`
@@ -90,6 +97,7 @@ type bulkDeleteRequest struct {
 
 type scheduleResponse struct {
 	ID           string             `json:"id"`
+	Revision     int64              `json:"revision"`
 	UserID       string             `json:"user_id"`
 	Title        string             `json:"title"`
 	Description  *string            `json:"description"`
@@ -97,6 +105,9 @@ type scheduleResponse struct {
 	StartAt      time.Time          `json:"start_at"`
 	EndAt        *time.Time         `json:"end_at"`
 	AllDay       bool               `json:"all_day"`
+	Timezone     string             `json:"timezone"`
+	StartDate    *string            `json:"start_date"`
+	EndDate      *string            `json:"end_date"`
 	Status       string             `json:"status"`
 	Source       string             `json:"source"`
 	ExtractionID *string            `json:"extraction_id,omitempty"`
@@ -108,6 +119,7 @@ type scheduleResponse struct {
 func toScheduleResponse(s *service.Schedule) scheduleResponse {
 	resp := scheduleResponse{
 		ID:          s.ID.String(),
+		Revision:    s.Revision,
 		UserID:      s.UserID.String(),
 		Title:       s.Title,
 		Description: s.Description,
@@ -115,6 +127,9 @@ func toScheduleResponse(s *service.Schedule) scheduleResponse {
 		StartAt:     s.StartAt,
 		EndAt:       s.EndAt,
 		AllDay:      s.AllDay,
+		Timezone:    s.Timezone,
+		StartDate:   s.StartDate,
+		EndDate:     s.EndDate,
 		Status:      s.Status,
 		Source:      s.Source,
 		CreatedAt:   s.CreatedAt,

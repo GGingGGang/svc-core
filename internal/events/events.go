@@ -38,6 +38,9 @@ type ScheduleEvent struct {
 	StartAt    time.Time          `json:"start_at"`
 	EndAt      *time.Time         `json:"end_at"`
 	AllDay     bool               `json:"all_day"`
+	Timezone   string             `json:"timezone"`
+	StartDate  *string            `json:"start_date"`
+	EndDate    *string            `json:"end_date"`
 	Source     string             `json:"source"`
 	Status     string             `json:"status"`
 	Revision   int64              `json:"revision"`

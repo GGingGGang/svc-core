@@ -128,15 +128,15 @@ paths:
         candidates; nothing is persisted as a schedule (client must POST
         /schedules with source=ai to confirm one). now/timezone let the
         model convert relative expressions ("다음주 화요일") into absolute
-        UTC timestamps. An X-Gemini-Key header (BYOK) is used if present;
-        otherwise the server's own Gemini key is used as a fallback. Every
-        call — success or failure — is recorded as an ai_extractions audit
-        row.
+        UTC timestamps. A supplied X-Gemini-Key is the exclusive key for this
+        request; if it is invalid or rate-limited, Core reports that failure
+        without retrying with the server key. Each call stores only audit
+        metadata; raw input and extraction result are not retained.
       parameters:
         - name: X-Gemini-Key
           in: header
           required: false
-          description: caller-supplied Gemini API key (BYOK); omit to use the server's fallback key
+          description: caller-supplied Gemini API key (BYOK); omit to use the server key
           schema:
             type: string
       requestBody:
@@ -233,6 +233,11 @@ paths:
       responses:
         "201":
           description: schedule created
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Strong ETag containing the schedule revision.
           content:
             application/json:
               schema:
@@ -242,7 +247,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":
-          description: Idempotency-Key conflict, more than five reminders, or duplicate reminder
+          description: Idempotency-Key conflict, reminder limit/duplicate, or unavailable consented channel
           content:
             application/json:
               schema:
@@ -250,26 +255,92 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /internal/reminders/{scheduleID}/validity:
+    get:
+      tags: [Internal]
+      summary: Validate a pending reminder against current schedule and account state
+      description: Requires the shared internal service bearer token. Returns valid:false for missing, foreign, cancelled, or changed reminder timing/channel. A revision change alone is allowed when the computed reminder instant remains the same.
+      security: []
+      parameters:
+        - name: scheduleID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: revision
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: minutes_before
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10080
+        - name: channel
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: remind_at
+          in: query
+          required: true
+          description: Expected scheduled delivery instant in RFC3339. Core recomputes it from the live schedule and reminder offset.
+          schema:
+            type: string
+            format: date-time
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer INTERNAL_SERVICE_TOKEN
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current schedule snapshot and validity decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReminderValidity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: Internal token or authoritative account/schedule lookup is unavailable
+
     get:
       tags: [Schedules]
       summary: List schedules in a time range
       description: >-
-        Returns schedules with start_at in [from, to). Omitting from/to
-        defaults to the widest range the start_at column can hold for legacy
-        unpaginated requests. Supplying limit opts into keyset pagination and
-        requires from and to with from < to and a range no longer than 366 days.
-        q requires limit and searches title/location for a literal substring.
-        Cursor is bound to the user and all filters. List rows omit reminders.
+        Every request is bounded and keyset-paginated. from/to are required,
+        from must precede to, and the range may not exceed 366 days. limit
+        defaults to 20 and may be 1..100. q searches title/location as a
+        literal substring. Timed schedules use interval overlap; all-day
+        schedules use fixed local date ranges in the query timezone. Cursor is
+        bound to user, timezone, and all filters. List rows omit reminders.
       parameters:
         - name: from
           in: query
-          description: inclusive lower bound, RFC3339 UTC
+          required: true
+          description: inclusive lower bound, RFC3339 timestamp
           schema:
             type: string
             format: date-time
         - name: to
           in: query
-          description: exclusive upper bound, RFC3339 UTC
+          required: true
+          description: exclusive upper bound, RFC3339 timestamp
           schema:
             type: string
             format: date-time
@@ -279,21 +350,28 @@ paths:
             $ref: "#/components/schemas/ScheduleStatus"
         - name: q
           in: query
-          description: Literal substring search in title and location; requires limit.
+          description: Literal substring search in title and location; blank is treated as no search.
           schema:
             type: string
         - name: limit
           in: query
-          description: Opts into pagination; requires from and to.
+          description: Page size; defaults to 20.
           schema:
             type: integer
+            default: 20
             minimum: 1
             maximum: 100
         - name: cursor
           in: query
-          description: Cursor returned by the previous page; requires limit and identical filters.
+          description: Cursor returned by the previous page; filters must remain identical.
           schema:
             type: string
+        - name: timezone
+          in: query
+          description: IANA display/calendar timezone used only for all-day date overlap and cursor binding; defaults to UTC.
+          schema:
+            type: string
+            default: UTC
       responses:
         "200":
           description: matching schedules
@@ -309,7 +387,7 @@ paths:
                   next_cursor:
                     type: string
                     nullable: true
-                    description: Present only for paginated requests; null after the last page.
+                    description: Always present; null after the last page.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -322,10 +400,10 @@ paths:
       tags: [Schedules]
       summary: Delete up to 100 schedules owned by the caller
       description: >-
-        Ids that do not exist, or belong to a different user, are silently
-        excluded from the delete rather than causing an error; the response
-        reports how many rows were actually removed. Optional Idempotency-Key
-        preserves the first result for 24 hours.
+        The operation is atomic. If any ID is missing or not owned by the
+        caller, no schedule is deleted and a generic 404 is returned.
+        Duplicate IDs are rejected. Optional Idempotency-Key preserves the
+        first result for 24 hours.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -362,6 +440,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
@@ -376,6 +456,11 @@ paths:
       responses:
         "200":
           description: the schedule
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Strong ETag containing the schedule revision.
           content:
             application/json:
               schema:
@@ -396,14 +481,21 @@ paths:
         Only the fields present in the request body are changed; omitted
         fields keep their current value. A field set explicitly to null is
         rejected with 400 for every field except description and location,
-        which are nullable. Optional Idempotency-Key preserves the first
-        result for 24 hours; reusing it with different content returns 409.
+        which are nullable. If-Match with the current strong ETag is required;
+        a stale revision returns 412 and a missing precondition returns 428.
+        Exact Idempotency-Key retries replay the original successful response.
       parameters:
         - name: Idempotency-Key
           in: header
           schema:
             type: string
             maxLength: 128
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag returned by GET/POST/PATCH, e.g. "3".
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -413,6 +505,11 @@ paths:
       responses:
         "200":
           description: the updated schedule
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Strong ETag containing the schedule revision.
           content:
             application/json:
               schema:
@@ -425,6 +522,24 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "412":
+          description: The schedule revision changed since it was read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Local time is nonexistent or ambiguous without a fold choice.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "428":
+          description: If-Match was omitted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -631,7 +746,11 @@ components:
 
     ReminderChannel:
       type: string
-      enum: [push, email, none]
+      enum: [push, email, none, telegram]
+
+    SupportedReminderChannel:
+      type: string
+      enum: [telegram]
 
     CreateReminderRequest:
       type: object
@@ -643,7 +762,7 @@ components:
           minimum: 0
           maximum: 10080
         channel:
-          $ref: "#/components/schemas/ReminderChannel"
+          $ref: "#/components/schemas/SupportedReminderChannel"
 
     Reminder:
       type: object
@@ -663,9 +782,53 @@ components:
           type: string
           format: date-time
 
+    ReminderValidity:
+      type: object
+      required: [valid, schedule_id, user_id, title, revision, status, start_at, end_at, all_day, timezone, start_date, end_date]
+      properties:
+        valid:
+          type: boolean
+        schedule_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        revision:
+          type: integer
+          format: int64
+        status:
+          type: string
+        start_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        all_day:
+          type: boolean
+        timezone:
+          type: string
+        start_date:
+          type: string
+          format: date
+          nullable: true
+        end_date:
+          type: string
+          format: date
+          nullable: true
+
     CreateScheduleRequest:
       type: object
-      required: [title, start_at]
+      required: [title]
+      description: >-
+        Provide either start_at (absolute RFC3339) or local_start_at with an
+        IANA timezone. All-day requests use start_date/end_date (exclusive)
+        and timezone instead. Fold choices are required for repeated local times.
       properties:
         title:
           type: string
@@ -680,6 +843,7 @@ components:
         start_at:
           type: string
           format: date-time
+          description: Absolute timestamp. Mutually exclusive with local_start_at.
         end_at:
           type: string
           format: date-time
@@ -687,6 +851,30 @@ components:
         all_day:
           type: boolean
           default: false
+        timezone:
+          type: string
+          default: UTC
+          description: IANA timezone. Existing UTC timestamps remain accepted.
+        local_start_at:
+          type: string
+          description: Local wall time YYYY-MM-DDTHH:mm:ss; requires timezone.
+        local_end_at:
+          type: string
+          description: Optional local wall time YYYY-MM-DDTHH:mm:ss; requires timezone.
+        start_fold:
+          type: string
+          enum: [earlier, later]
+        end_fold:
+          type: string
+          enum: [earlier, later]
+        start_date:
+          type: string
+          format: date
+          description: Required for date-only all-day input.
+        end_date:
+          type: string
+          format: date
+          description: Exclusive end date for all-day schedules.
         status:
           allOf:
             - $ref: "#/components/schemas/ScheduleStatus"
@@ -727,6 +915,24 @@ components:
           nullable: true
         all_day:
           type: boolean
+        timezone:
+          type: string
+        local_start_at:
+          type: string
+        local_end_at:
+          type: string
+        start_fold:
+          type: string
+          enum: [earlier, later]
+        end_fold:
+          type: string
+          enum: [earlier, later]
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
         status:
           $ref: "#/components/schemas/ScheduleStatus"
 
@@ -768,6 +974,9 @@ components:
         id:
           type: string
           format: uuid
+        revision:
+          type: integer
+          format: int64
         user_id:
           type: string
           format: uuid
@@ -788,6 +997,16 @@ components:
           nullable: true
         all_day:
           type: boolean
+        timezone:
+          type: string
+        start_date:
+          type: string
+          format: date
+          nullable: true
+        end_date:
+          type: string
+          format: date
+          nullable: true
         status:
           $ref: "#/components/schemas/ScheduleStatus"
         source:

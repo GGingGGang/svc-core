@@ -47,6 +47,25 @@ func timePtr(nt sql.NullTime) *time.Time {
 	return &v
 }
 
+func nullDate(date *string) sql.NullTime {
+	if date == nil {
+		return sql.NullTime{}
+	}
+	t, err := time.Parse("2006-01-02", *date)
+	if err != nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
+}
+
+func datePtr(date sql.NullTime) *string {
+	if !date.Valid {
+		return nil
+	}
+	v := date.Time.Format("2006-01-02")
+	return &v
+}
+
 // extraction_id is BINARY(16) NULL. sqlc's MySQL codegen represents nullable
 // binary columns as sql.NullString rather than []byte (non-nullable BINARY
 // columns map to []byte directly) — the raw 16 bytes ride in the String
@@ -92,6 +111,9 @@ func mapSchedule(row *repo.Schedule, reminders []*repo.ScheduleReminder) (*Sched
 		StartAt:      row.StartAt.UTC(),
 		EndAt:        timePtr(row.EndAt),
 		AllDay:       row.AllDay,
+		Timezone:     row.Timezone,
+		StartDate:    datePtr(row.StartDate),
+		EndDate:      datePtr(row.EndDate),
 		Status:       string(row.Status),
 		Source:       string(row.Source),
 		ExtractionID: extractionID,

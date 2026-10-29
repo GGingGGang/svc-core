@@ -64,6 +64,13 @@ SELECT * FROM schedule_reminders
 WHERE schedule_id = ?
 ORDER BY minutes_before ASC;
 
+-- name: GetScheduleOccurrence :one
+SELECT o.series_id, o.occurrence_index, s.recurrence_json
+FROM schedule_occurrences o
+JOIN schedule_series s ON s.series_id = o.series_id
+JOIN schedules owner_schedule ON owner_schedule.id = o.schedule_id
+WHERE o.schedule_id = ? AND owner_schedule.user_id = ?;
+
 -- name: DeleteReminder :execrows
 DELETE FROM schedule_reminders
 WHERE id = ? AND schedule_id = ?;

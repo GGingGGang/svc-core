@@ -20,6 +20,7 @@ import (
 // does not belong to the requesting user.
 var ErrNotFound = errors.New("not found")
 var ErrInvalidSchedule = errors.New("invalid schedule fields")
+var ErrNotRecurring = errors.New("schedule is not part of a recurrence")
 var ErrRevisionConflict = errors.New("schedule revision conflict")
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different content")
 var ErrInvalidReminder = errors.New("invalid reminder")

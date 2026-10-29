@@ -61,6 +61,7 @@ type reminderJSON struct {
 
 type scheduleJSON struct {
 	ID          string         `json:"id"`
+	Revision    int64          `json:"revision"`
 	UserID      string         `json:"user_id"`
 	Title       string         `json:"title"`
 	Description *string        `json:"description"`
@@ -185,7 +186,7 @@ func setupServerWithPublisherWorker(t *testing.T, pub *events.Publisher, aiClnt 
 		tcmysql.WithDatabase("core"),
 		tcmysql.WithUsername("core_test"),
 		tcmysql.WithPassword("core_test"),
-		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql", "../../db/migrations/000008_schedule_timezone_dates.up.sql", "../../db/migrations/000009_telegram_reminder_channel.up.sql", "../../db/migrations/000010_account_deletion_tombstones.up.sql"),
+		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql", "../../db/migrations/000008_schedule_timezone_dates.up.sql", "../../db/migrations/000009_telegram_reminder_channel.up.sql", "../../db/migrations/000010_account_deletion_tombstones.up.sql", "../../db/migrations/000011_schedule_series.up.sql"),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -380,6 +381,74 @@ func TestCloneScheduleCreatesFreshIdempotentSchedule(t *testing.T) {
 	require.Equal(t, clone.ID, replay.ID, "exact idempotent retry returns the same clone")
 	status, _ = call(otherUser)
 	require.Equal(t, http.StatusNotFound, status, "source schedules are user-scoped")
+}
+
+func TestCreateRecurringScheduleMaterializesOrdinaryBoundedOccurrences(t *testing.T) {
+	srv, jwks := setupServer(t)
+	token := jwks.mint(t, uuid.New().String(), time.Hour)
+	count := 3
+	request := map[string]any{
+		"title": "monthly series", "start_at": "2026-01-31T09:00:00Z", "timezone": "UTC",
+		"recurrence": map[string]any{"frequency": "MONTHLY", "interval": 1, "count": count},
+	}
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, request)
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var first scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &first))
+	require.NotEmpty(t, first.ID)
+	var series struct {
+		SeriesID string `json:"series_id"`
+		Index    int    `json:"occurrence_index"`
+	}
+	require.NoError(t, json.Unmarshal(body, &series))
+	require.NotEmpty(t, series.SeriesID)
+	require.Zero(t, series.Index)
+
+	status, body = doRequest(t, srv.Client(), http.MethodGet, srv.URL+"/schedules?from=2026-01-01T00:00:00Z&to=2026-07-01T00:00:00Z&limit=10", token, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	var list struct {
+		Schedules []struct {
+			ID              string    `json:"id"`
+			SeriesID        string    `json:"series_id"`
+			OccurrenceIndex int       `json:"occurrence_index"`
+			StartAt         time.Time `json:"start_at"`
+			Title           string    `json:"title"`
+		} `json:"schedules"`
+	}
+	require.NoError(t, json.Unmarshal(body, &list))
+	require.Len(t, list.Schedules, 3)
+	require.Equal(t, []string{"2026-01-31", "2026-03-31", "2026-05-31"}, []string{list.Schedules[0].StartAt.Format("2006-01-02"), list.Schedules[1].StartAt.Format("2006-01-02"), list.Schedules[2].StartAt.Format("2006-01-02")})
+	for index, occurrence := range list.Schedules {
+		require.Equal(t, series.SeriesID, occurrence.SeriesID)
+		require.Equal(t, index, occurrence.OccurrenceIndex)
+	}
+	secondURL := srv.URL + "/schedules/" + list.Schedules[1].ID
+	status, body = doRequest(t, srv.Client(), http.MethodPatch, secondURL, token, map[string]any{"title": "changed from second", "scope": "following"})
+	require.Equal(t, http.StatusOK, status, string(body))
+	status, body = doRequest(t, srv.Client(), http.MethodGet, srv.URL+"/schedules?from=2026-01-01T00:00:00Z&to=2026-07-01T00:00:00Z&limit=10", token, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	require.NoError(t, json.Unmarshal(body, &list))
+	require.Equal(t, []string{"monthly series", "changed from second", "changed from second"}, []string{list.Schedules[0].Title, list.Schedules[1].Title, list.Schedules[2].Title})
+	thirdURL := srv.URL + "/schedules/" + list.Schedules[2].ID
+	getReq, err := http.NewRequest(http.MethodGet, thirdURL, nil)
+	require.NoError(t, err)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getResp, err := srv.Client().Do(getReq)
+	require.NoError(t, err)
+	etag := getResp.Header.Get("ETag")
+	require.NoError(t, getResp.Body.Close())
+	deleteReq, err := http.NewRequest(http.MethodDelete, thirdURL+"?scope=following", nil)
+	require.NoError(t, err)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteReq.Header.Set("If-Match", etag)
+	deleteResp, err := srv.Client().Do(deleteReq)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, deleteResp.StatusCode)
+	require.NoError(t, deleteResp.Body.Close())
+	status, body = doRequest(t, srv.Client(), http.MethodGet, srv.URL+"/schedules?from=2026-01-01T00:00:00Z&to=2026-07-01T00:00:00Z&limit=10", token, nil)
+	require.Equal(t, http.StatusOK, status, string(body))
+	require.NoError(t, json.Unmarshal(body, &list))
+	require.Len(t, list.Schedules, 2, "deleting this and following occurrences does not recreate them")
 }
 
 func doRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {

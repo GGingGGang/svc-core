@@ -63,6 +63,50 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /schedules/recurrence/preview:
+    post:
+      tags: [Schedules]
+      summary: Preview a bounded recurrence before saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/CreateScheduleRequest"
+              required: [recurrence]
+      responses:
+        "200":
+          description: Materialized occurrence preview and skipped monthly dates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [occurrences, skipped]
+                properties:
+                  occurrences:
+                    type: array
+                    maxItems: 100
+                    items:
+                      $ref: "#/components/schemas/RecurrenceOccurrencePreview"
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      required: [local_date, reason]
+                      properties:
+                        local_date: { type: string, format: date }
+                        reason: { type: string, enum: [day_of_month_missing] }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: A generated local time is nonexistent or ambiguous without a fold choice.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /healthz:
     get:
       tags: [Health]
@@ -606,7 +650,8 @@ paths:
       tags: [Schedules]
       summary: Hard delete a schedule
       description: >-
-        Deletes the schedule (and its reminders, via cascade) immediately.
+        Deletes the selected occurrence immediately, or this and later recurring
+        occurrences when scope=following. That scope requires the current If-Match.
         Optional Idempotency-Key makes retries return 204 for 24 hours.
       parameters:
         - name: Idempotency-Key
@@ -614,6 +659,17 @@ paths:
           schema:
             type: string
             maxLength: 128
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [this, following]
+            default: this
+        - name: If-Match
+          in: header
+          description: Required for scope=following.
+          schema:
+            type: string
       responses:
         "204":
           description: deleted
@@ -631,6 +687,16 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           $ref: "#/components/responses/Conflict"
+        "412":
+          description: The selected occurrence has changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "428":
+          description: If-Match is required for following scope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1055,6 +1121,8 @@ components:
           maxItems: 5
           items:
             $ref: "#/components/schemas/CreateReminderRequest"
+        recurrence:
+          $ref: "#/components/schemas/RecurrenceRule"
 
     UpdateScheduleRequest:
       type: object
@@ -1098,6 +1166,11 @@ components:
           format: date
         status:
           $ref: "#/components/schemas/ScheduleStatus"
+        scope:
+          type: string
+          enum: [this, following]
+          default: this
+          description: On recurrence, following applies changes atomically to this and later stored occurrences.
 
     ExtractCandidate:
       type: object
@@ -1131,6 +1204,46 @@ components:
             type: string
           description: validation, ambiguity, or possible_duplicate issue codes
 
+    RecurrenceRule:
+      type: object
+      required: [frequency, interval]
+      description: Exactly one of count or until is required. Until is inclusive in the series timezone.
+      properties:
+        frequency:
+          type: string
+          enum: [DAILY, WEEKLY, MONTHLY]
+        interval:
+          type: integer
+          minimum: 1
+          maximum: 30
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+        until:
+          type: string
+          format: date
+          description: Inclusive local date, no more than one year after the first occurrence.
+        weekdays:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [MO, TU, WE, TH, FR, SA, SU] }
+        exdates:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: date }
+
+    RecurrenceOccurrencePreview:
+      type: object
+      properties:
+        index: { type: integer, minimum: 0 }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time, nullable: true }
+        all_day: { type: boolean }
+        start_date: { type: string, format: date, nullable: true }
+        end_date: { type: string, format: date, nullable: true }
+
     Schedule:
       type: object
       properties:
@@ -1140,6 +1253,18 @@ components:
         revision:
           type: integer
           format: int64
+        series_id:
+          type: string
+          format: uuid
+          nullable: true
+        occurrence_index:
+          type: integer
+          minimum: 0
+          nullable: true
+        recurrence:
+          allOf:
+            - $ref: "#/components/schemas/RecurrenceRule"
+          nullable: true
         user_id:
           type: string
           format: uuid

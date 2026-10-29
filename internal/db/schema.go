@@ -24,6 +24,8 @@ func CheckReady(ctx context.Context, sqlDB *sql.DB) error {
 		{"schedule_create_requests", "user_id,idempotency_key,request_hash,response_json,expires_at"},
 		{"schedule_mutation_requests", "user_id,operation,idempotency_key,schedule_id,request_hash,response_json,expires_at"},
 		{"account_deletion_tombstones", "user_id,created_at"},
+		{"schedule_series", "series_id,user_id,recurrence_json,created_at"},
+		{"schedule_occurrences", "schedule_id,series_id,occurrence_index,local_start,local_date"},
 	} {
 		rows, err := sqlDB.QueryContext(ctx, "SELECT "+check.columns+" FROM "+check.table+" LIMIT 0")
 		if err != nil {

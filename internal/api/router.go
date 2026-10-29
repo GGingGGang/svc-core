@@ -35,6 +35,7 @@ func Router(h *Handler, authMiddleware func(http.Handler) http.Handler) http.Han
 		r.Post("/{id}/clone", h.CloneSchedule)
 		r.Get("/", h.ListSchedules)
 		r.Post("/extract", http.TimeoutHandler(http.HandlerFunc(h.ExtractSchedules), extractProcessingTimeout, `{"error":"extraction timed out"}`).ServeHTTP)
+		r.Post("/recurrence/preview", h.PreviewRecurrence)
 		r.Post("/bulk-delete", h.BulkDeleteSchedules)
 
 		r.Route("/{id}", func(r chi.Router) {

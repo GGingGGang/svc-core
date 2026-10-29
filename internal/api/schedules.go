@@ -55,7 +55,15 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "timezone must be an IANA timezone")
 		return
 	}
-	startAt, endAt, startDate, endDate, err := resolveScheduleTimes(req.StartAt, req.EndAt, req.LocalStartAt, req.LocalEndAt, req.StartDate, req.EndDate, req.AllDay, timezone, req.StartFold, req.EndFold)
+	var startAt time.Time
+	var endAt *time.Time
+	var startDate, endDate *string
+	var err error
+	if req.Recurrence != nil {
+		startAt, endAt, startDate, endDate, err = resolveRecurrenceAnchorTimes(req, timezone)
+	} else {
+		startAt, endAt, startDate, endDate, err = resolveScheduleTimes(req.StartAt, req.EndAt, req.LocalStartAt, req.LocalEndAt, req.StartDate, req.EndDate, req.AllDay, timezone, req.StartFold, req.EndFold)
+	}
 	if err != nil {
 		writeTimeInputError(w, err)
 		return
@@ -88,7 +96,7 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sch, err := h.svc.CreateSchedule(r.Context(), userID, service.CreateScheduleInput{
+	createInput := service.CreateScheduleInput{
 		IdempotencyKey: key,
 		Title:          req.Title,
 		Description:    req.Description,
@@ -103,7 +111,27 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		Source:         req.Source,
 		ExtractionID:   extractionID,
 		Reminders:      reminders,
-	})
+		Recurrence:     req.Recurrence,
+	}
+	var sch *service.Schedule
+	if req.Recurrence != nil {
+		occurrences, _, recurrenceErr := generateOccurrences(startAt, endAt, req.AllDay, startDate, endDate, timezone, *req.Recurrence, req.StartFold, req.EndFold)
+		if recurrenceErr != nil {
+			if errors.Is(recurrenceErr, errNonexistentLocalTime) || errors.Is(recurrenceErr, errAmbiguousLocalTime) {
+				writeTimeInputError(w, recurrenceErr)
+			} else {
+				writeError(w, http.StatusBadRequest, recurrenceErr.Error())
+			}
+			return
+		}
+		serviceOccurrences := make([]service.ScheduleOccurrence, len(occurrences))
+		for index, occurrence := range occurrences {
+			serviceOccurrences[index] = service.ScheduleOccurrence{StartAt: occurrence.StartAt, EndAt: occurrence.EndAt, AllDay: occurrence.AllDay, StartDate: occurrence.StartDate, EndDate: occurrence.EndDate, LocalStart: occurrence.LocalStart}
+		}
+		sch, err = h.svc.CreateRecurringSchedules(r.Context(), userID, createInput, serviceOccurrences)
+	} else {
+		sch, err = h.svc.CreateSchedule(r.Context(), userID, createInput)
+	}
 	if errors.Is(err, service.ErrIdempotencyConflict) {
 		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
 		return
@@ -352,6 +380,13 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 
 	fields := service.SchedulePatch{}
 	fields.ExpectedRevision = &expectedRevision
+	fields.Scope = readString(raw["scope"])
+	if fields.Scope != "" && fields.Scope != "this" && fields.Scope != "following" {
+		writeError(w, http.StatusBadRequest, "scope must be this or following")
+		return
+	}
+	fields.StartFold = readString(raw["start_fold"])
+	fields.EndFold = readString(raw["end_fold"])
 
 	if v, ok := raw["title"]; ok {
 		var p *string
@@ -494,6 +529,10 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusPreconditionFailed, "schedule changed; reload and retry")
 		return
 	}
+	if errors.Is(err, service.ErrNotRecurring) {
+		writeError(w, http.StatusBadRequest, "following scope requires a recurring schedule")
+		return
+	}
 	if errors.Is(err, service.ErrAccountDeleted) {
 		writeError(w, http.StatusGone, "account has been deleted")
 		return
@@ -630,13 +669,44 @@ func (h *Handler) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key")
 		return
 	}
-	err = h.svc.DeleteSchedule(r.Context(), userID, id, key)
+	scope := r.URL.Query().Get("scope")
+	if scope == "" {
+		scope = "this"
+	}
+	if scope != "this" && scope != "following" {
+		writeError(w, http.StatusBadRequest, "scope must be this or following")
+		return
+	}
+	if scope == "following" {
+		expectedRevision, ok := parseIfMatch(r.Header.Get("If-Match"))
+		if !ok {
+			writeError(w, http.StatusPreconditionRequired, "If-Match with schedule ETag is required for following scope")
+			return
+		}
+		canonical, marshalErr := json.Marshal([]string{id.String(), scope, r.Header.Get("If-Match")})
+		if marshalErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid delete request")
+			return
+		}
+		requestHash := sha256.Sum256(canonical)
+		err = h.svc.DeleteScheduleFollowing(r.Context(), userID, id, key, expectedRevision, requestHash)
+	} else {
+		err = h.svc.DeleteSchedule(r.Context(), userID, id, key)
+	}
 	if errors.Is(err, service.ErrIdempotencyConflict) {
 		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
 		return
 	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
+	if errors.Is(err, service.ErrNotRecurring) {
+		writeError(w, http.StatusBadRequest, "following scope requires a recurring schedule")
+		return
+	}
+	if errors.Is(err, service.ErrRevisionConflict) {
+		writeError(w, http.StatusPreconditionFailed, "schedule changed; reload and retry")
 		return
 	}
 	if errors.Is(err, service.ErrAccountDeleted) {

@@ -8,30 +8,36 @@ import (
 )
 
 type Schedule struct {
-	ID           uuid.UUID
-	UserID       uuid.UUID
-	Title        string
-	Description  *string
-	Location     *string
-	StartAt      time.Time
-	EndAt        *time.Time
-	AllDay       bool
-	Timezone     string
-	StartDate    *string
-	EndDate      *string
-	Status       string
-	Source       string
-	ExtractionID *uuid.UUID
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Revision     int64
-	Reminders    []Reminder
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	Title           string
+	Description     *string
+	Location        *string
+	StartAt         time.Time
+	EndAt           *time.Time
+	AllDay          bool
+	Timezone        string
+	StartDate       *string
+	EndDate         *string
+	Status          string
+	Source          string
+	ExtractionID    *uuid.UUID
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Revision        int64
+	Reminders       []Reminder
+	SeriesID        *uuid.UUID
+	OccurrenceIndex *int
+	Recurrence      *RecurrenceRule
 }
 
 // SchedulePatch contains only supplied fields. Pointer-to-pointer fields
 // distinguish omission from an explicit null that clears a nullable column.
 type SchedulePatch struct {
 	ExpectedRevision *int64
+	Scope            string
+	StartFold        string
+	EndFold          string
 	Title            *string
 	Description      **string
 	Location         **string
@@ -77,6 +83,25 @@ type CreateScheduleInput struct {
 	Source         string
 	ExtractionID   *uuid.UUID
 	Reminders      []ReminderInput
+	Recurrence     *RecurrenceRule
+}
+
+type RecurrenceRule struct {
+	Frequency string   `json:"frequency"`
+	Interval  int      `json:"interval"`
+	Count     *int     `json:"count,omitempty"`
+	Until     *string  `json:"until,omitempty"`
+	Weekdays  []string `json:"weekdays,omitempty"`
+	Exdates   []string `json:"exdates,omitempty"`
+}
+
+type ScheduleOccurrence struct {
+	StartAt    time.Time
+	EndAt      *time.Time
+	AllDay     bool
+	StartDate  *string
+	EndDate    *string
+	LocalStart time.Time
 }
 
 type Reminder struct {

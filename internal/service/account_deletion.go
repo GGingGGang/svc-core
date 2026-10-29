@@ -28,6 +28,7 @@ WHERE JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')) = ?
 	for _, query := range []string{
 		"DELETE FROM schedule_create_requests WHERE user_id = ?",
 		"DELETE FROM schedule_mutation_requests WHERE user_id = ?",
+		"DELETE FROM schedule_series WHERE user_id = ?",
 		"DELETE FROM ai_request_admissions WHERE user_id = ?",
 		"DELETE FROM ai_request_users WHERE user_id = ?",
 		"DELETE FROM ai_extractions WHERE user_id = ?",

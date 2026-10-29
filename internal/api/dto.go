@@ -72,23 +72,24 @@ func toReminderResponse(r *service.Reminder) reminderResponse {
 }
 
 type createScheduleRequest struct {
-	Title        string            `json:"title" validate:"required,max=255"`
-	Description  *string           `json:"description,omitempty"`
-	Location     *string           `json:"location,omitempty" validate:"omitempty,max=255"`
-	StartAt      *time.Time        `json:"start_at,omitempty"`
-	EndAt        *time.Time        `json:"end_at,omitempty"`
-	AllDay       bool              `json:"all_day"`
-	Timezone     string            `json:"timezone,omitempty"`
-	StartDate    *string           `json:"start_date,omitempty"`
-	EndDate      *string           `json:"end_date,omitempty"`
-	LocalStartAt *string           `json:"local_start_at,omitempty"`
-	LocalEndAt   *string           `json:"local_end_at,omitempty"`
-	StartFold    string            `json:"start_fold,omitempty" validate:"omitempty,oneof=earlier later"`
-	EndFold      string            `json:"end_fold,omitempty" validate:"omitempty,oneof=earlier later"`
-	Status       string            `json:"status,omitempty" validate:"omitempty,oneof=confirmed tentative cancelled"`
-	Source       string            `json:"source,omitempty" validate:"omitempty,oneof=manual ai"`
-	ExtractionID *string           `json:"extraction_id,omitempty" validate:"omitempty,uuid"`
-	Reminders    []reminderRequest `json:"reminders,omitempty" validate:"omitempty,dive"`
+	Title        string                  `json:"title" validate:"required,max=255"`
+	Description  *string                 `json:"description,omitempty"`
+	Location     *string                 `json:"location,omitempty" validate:"omitempty,max=255"`
+	StartAt      *time.Time              `json:"start_at,omitempty"`
+	EndAt        *time.Time              `json:"end_at,omitempty"`
+	AllDay       bool                    `json:"all_day"`
+	Timezone     string                  `json:"timezone,omitempty"`
+	StartDate    *string                 `json:"start_date,omitempty"`
+	EndDate      *string                 `json:"end_date,omitempty"`
+	LocalStartAt *string                 `json:"local_start_at,omitempty"`
+	LocalEndAt   *string                 `json:"local_end_at,omitempty"`
+	StartFold    string                  `json:"start_fold,omitempty" validate:"omitempty,oneof=earlier later"`
+	EndFold      string                  `json:"end_fold,omitempty" validate:"omitempty,oneof=earlier later"`
+	Status       string                  `json:"status,omitempty" validate:"omitempty,oneof=confirmed tentative cancelled"`
+	Source       string                  `json:"source,omitempty" validate:"omitempty,oneof=manual ai"`
+	ExtractionID *string                 `json:"extraction_id,omitempty" validate:"omitempty,uuid"`
+	Reminders    []reminderRequest       `json:"reminders,omitempty" validate:"omitempty,dive"`
+	Recurrence   *service.RecurrenceRule `json:"recurrence,omitempty"`
 }
 
 type bulkDeleteRequest struct {
@@ -96,24 +97,27 @@ type bulkDeleteRequest struct {
 }
 
 type scheduleResponse struct {
-	ID           string             `json:"id"`
-	Revision     int64              `json:"revision"`
-	UserID       string             `json:"user_id"`
-	Title        string             `json:"title"`
-	Description  *string            `json:"description"`
-	Location     *string            `json:"location"`
-	StartAt      time.Time          `json:"start_at"`
-	EndAt        *time.Time         `json:"end_at"`
-	AllDay       bool               `json:"all_day"`
-	Timezone     string             `json:"timezone"`
-	StartDate    *string            `json:"start_date"`
-	EndDate      *string            `json:"end_date"`
-	Status       string             `json:"status"`
-	Source       string             `json:"source"`
-	ExtractionID *string            `json:"extraction_id,omitempty"`
-	CreatedAt    time.Time          `json:"created_at"`
-	UpdatedAt    time.Time          `json:"updated_at"`
-	Reminders    []reminderResponse `json:"reminders,omitempty"`
+	ID              string                  `json:"id"`
+	Revision        int64                   `json:"revision"`
+	UserID          string                  `json:"user_id"`
+	Title           string                  `json:"title"`
+	Description     *string                 `json:"description"`
+	Location        *string                 `json:"location"`
+	StartAt         time.Time               `json:"start_at"`
+	EndAt           *time.Time              `json:"end_at"`
+	AllDay          bool                    `json:"all_day"`
+	Timezone        string                  `json:"timezone"`
+	StartDate       *string                 `json:"start_date"`
+	EndDate         *string                 `json:"end_date"`
+	Status          string                  `json:"status"`
+	Source          string                  `json:"source"`
+	ExtractionID    *string                 `json:"extraction_id,omitempty"`
+	CreatedAt       time.Time               `json:"created_at"`
+	UpdatedAt       time.Time               `json:"updated_at"`
+	Reminders       []reminderResponse      `json:"reminders,omitempty"`
+	SeriesID        *string                 `json:"series_id,omitempty"`
+	OccurrenceIndex *int                    `json:"occurrence_index,omitempty"`
+	Recurrence      *service.RecurrenceRule `json:"recurrence,omitempty"`
 }
 
 func toScheduleResponse(s *service.Schedule) scheduleResponse {
@@ -139,6 +143,12 @@ func toScheduleResponse(s *service.Schedule) scheduleResponse {
 		id := s.ExtractionID.String()
 		resp.ExtractionID = &id
 	}
+	if s.SeriesID != nil {
+		id := s.SeriesID.String()
+		resp.SeriesID = &id
+	}
+	resp.OccurrenceIndex = s.OccurrenceIndex
+	resp.Recurrence = s.Recurrence
 	if len(s.Reminders) > 0 {
 		resp.Reminders = make([]reminderResponse, 0, len(s.Reminders))
 		for _, r := range s.Reminders {

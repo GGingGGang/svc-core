@@ -174,6 +174,32 @@ SELECT id, user_id, title, description, location, start_at, end_at, all_day, sta
 WHERE id = ? AND user_id = ?
 `
 
+const getScheduleOccurrence = `-- name: GetScheduleOccurrence :one
+SELECT o.series_id, o.occurrence_index, s.recurrence_json
+FROM schedule_occurrences o
+JOIN schedule_series s ON s.series_id = o.series_id
+JOIN schedules owner_schedule ON owner_schedule.id = o.schedule_id
+WHERE o.schedule_id = ? AND owner_schedule.user_id = ?
+`
+
+type GetScheduleOccurrenceRow struct {
+	SeriesID        []byte `json:"series_id"`
+	OccurrenceIndex int32  `json:"occurrence_index"`
+	RecurrenceJSON  []byte `json:"recurrence_json"`
+}
+
+type GetScheduleOccurrenceParams struct {
+	ScheduleID []byte `json:"schedule_id"`
+	UserID     []byte `json:"user_id"`
+}
+
+func (q *Queries) GetScheduleOccurrence(ctx context.Context, arg GetScheduleOccurrenceParams) (*GetScheduleOccurrenceRow, error) {
+	row := q.db.QueryRowContext(ctx, getScheduleOccurrence, arg.ScheduleID, arg.UserID)
+	var i GetScheduleOccurrenceRow
+	err := row.Scan(&i.SeriesID, &i.OccurrenceIndex, &i.RecurrenceJSON)
+	return &i, err
+}
+
 type GetScheduleParams struct {
 	ID     []byte `json:"id"`
 	UserID []byte `json:"user_id"`

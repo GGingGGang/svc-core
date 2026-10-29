@@ -160,7 +160,10 @@ paths:
                   description: IANA timezone name, e.g. Asia/Seoul
       responses:
         "200":
-          description: extracted candidates (not persisted)
+          description: >-
+            Extracted candidates are not persisted. Candidates overlapping an
+            existing same-title schedule include possible_duplicate in issues
+            and require confirmation; extraction never changes saved schedules.
           content:
             application/json:
               schema:
@@ -991,12 +994,12 @@ components:
           description: model's 0-1 confidence estimate for this candidate
         needs_confirmation:
           type: boolean
-          description: true if any required field is missing, invalid, or ambiguous
+          description: true if any required field is missing, invalid, ambiguous, or the candidate may duplicate a saved schedule
         issues:
           type: array
           items:
             type: string
-          description: validation or ambiguity issue codes; empty for a valid candidate
+          description: validation, ambiguity, or possible_duplicate issue codes
 
     Schedule:
       type: object

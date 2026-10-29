@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,9 @@ func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in Ext
 		status = repo.AiExtractionsStatusFailed
 	} else {
 		candidates = toExtractCandidates(result.Candidates)
+		if err := s.markPossibleDuplicates(ctx, userID, in.Timezone, candidates); err != nil {
+			return nil, false, err
+		}
 	}
 
 	s.recordExtraction(ctx, userID, len(in.Text), status, latencyMs)
@@ -68,6 +72,62 @@ func (s *Service) ExtractSchedules(ctx context.Context, userID uuid.UUID, in Ext
 		return nil, false, extractErr
 	}
 	return candidates, result.Truncated, nil
+}
+
+func (s *Service) markPossibleDuplicates(ctx context.Context, userID uuid.UUID, timezone string, candidates []ExtractCandidate) error {
+	zone, err := time.LoadLocation(timezone)
+	if err != nil {
+		return err
+	}
+	for i := range candidates {
+		candidate := &candidates[i]
+		if candidate.StartAt == nil || strings.TrimSpace(candidate.Title) == "" {
+			continue
+		}
+		start := candidate.StartAt.UTC()
+		end := start.Add(time.Millisecond)
+		if candidate.AllDay {
+			local := candidate.StartAt.In(zone)
+			start = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, zone).UTC()
+			end = start.In(zone).AddDate(0, 0, 1).UTC()
+			if candidate.EndAt != nil {
+				localEnd := candidate.EndAt.In(zone)
+				end = time.Date(localEnd.Year(), localEnd.Month(), localEnd.Day(), 0, 0, 0, 0, zone).UTC()
+			}
+		} else if candidate.EndAt != nil {
+			end = candidate.EndAt.UTC()
+		}
+		if !end.After(start) {
+			continue
+		}
+		var duplicate bool
+		err = s.db.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM schedules
+  WHERE user_id = ? AND status <> 'cancelled'
+    AND BINARY LOWER(TRIM(title)) = BINARY LOWER(TRIM(?))
+    AND start_at < ?
+    AND COALESCE(end_at, DATE_ADD(start_at, INTERVAL 1000 MICROSECOND)) > ?
+)`, idBytes(userID), candidate.Title, end, start).Scan(&duplicate)
+		if err != nil {
+			return err
+		}
+		if duplicate {
+			candidate.NeedsConfirmation = true
+			if !containsString(candidate.Issues, "possible_duplicate") {
+				candidate.Issues = append(candidate.Issues, "possible_duplicate")
+			}
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // A row lock serializes admissions across replicas; individual request rows

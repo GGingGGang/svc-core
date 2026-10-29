@@ -12,6 +12,7 @@
 
 ## AI 원문 보존
 
+- `AIX-016`: 추출 후보의 제목과 시각 구간이 겹치는 본인 일정이 있으면 `possible_duplicate`를 추가하고 `needs_confirmation=true`로 반환한다. 취소된 일정은 제외하며 어떤 기존 일정도 자동 삭제/교체하지 않는다.
 - `AIX-017`: 새 extraction의 원문과 결과 JSON은 DB에 저장하지 않고 메타데이터만 남긴다. 기존 데이터를 migration에서 자동 삭제하지 않는다. `cmd/cleanup-extractions`는 필수 cutoff를 받아 기본 dry-run으로 대상 수를 보여주고, 명시적인 `--apply`에서만 cutoff 이전 원문/결과를 지운다. 기존 데이터 정리 실행은 운영 작업으로 남겨 두었다.
 - `KEY-002`: BYOK 사용의 인증/요금제 우회 금지 및 공급자 오류 동작은 기존 AI 경로를 유지한다. 이번 변경은 extraction 원문 저장 여부에 한정한다.
 

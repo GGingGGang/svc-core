@@ -171,6 +171,37 @@ func TestExtractIntegration(t *testing.T) {
 	})
 }
 
+func TestExtractMarksPossibleDuplicateWithoutDeletingSchedule(t *testing.T) {
+	gemini := newGeminiStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(geminiSuccessBody(t, "duplicate candidate"))
+	})
+	srv, jwks, db := setupServerWithPublisher(t, nil, ai.New(gemini.URL, "gemini-test", "server-key"))
+	user := jwks.mint(t, uuid.New().String(), time.Hour)
+	status, body := doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", user, map[string]any{
+		"title": "duplicate candidate", "start_at": "2026-07-07T06:00:00Z", "end_at": "2026-07-07T07:00:00Z",
+	})
+	require.Equal(t, http.StatusCreated, status, string(body))
+
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules/extract", user, map[string]any{
+		"text": "an event", "now": "2026-06-28T00:00:00Z", "timezone": "UTC",
+	})
+	require.Equal(t, http.StatusOK, status, string(body))
+	var response struct {
+		Candidates []struct {
+			NeedsConfirmation bool     `json:"needs_confirmation"`
+			Issues            []string `json:"issues"`
+		} `json:"candidates"`
+	}
+	require.NoError(t, json.Unmarshal(body, &response))
+	require.Len(t, response.Candidates, 1)
+	require.True(t, response.Candidates[0].NeedsConfirmation)
+	require.Contains(t, response.Candidates[0].Issues, "possible_duplicate")
+	var schedules int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schedules").Scan(&schedules))
+	require.Equal(t, 1, schedules, "duplicate detection must never delete or auto-replace saved schedules")
+}
+
 // TestExtractIntegration_RateLimited uses its own server + stub (an
 // always-429 Gemini) so it doesn't share the happy-path server's audit-row
 // count above.

@@ -185,7 +185,7 @@ func setupServerWithPublisherWorker(t *testing.T, pub *events.Publisher, aiClnt 
 		tcmysql.WithDatabase("core"),
 		tcmysql.WithUsername("core_test"),
 		tcmysql.WithPassword("core_test"),
-		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql", "../../db/migrations/000008_schedule_timezone_dates.up.sql", "../../db/migrations/000009_telegram_reminder_channel.up.sql"),
+		tcmysql.WithScripts("../../db/migrations/000001_init.up.sql", "../../db/migrations/000002_event_outbox.up.sql", "../../db/migrations/000003_schedule_create_requests.up.sql", "../../db/migrations/000004_ai_request_limits.up.sql", "../../db/migrations/000005_schedule_revision.up.sql", "../../db/migrations/000006_schedule_mutation_requests.up.sql", "../../db/migrations/000008_schedule_timezone_dates.up.sql", "../../db/migrations/000009_telegram_reminder_channel.up.sql", "../../db/migrations/000010_account_deletion_tombstones.up.sql"),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -286,6 +286,54 @@ func TestReminderValidityIgnoresMetadataOnlyRevision(t *testing.T) {
 	status, result = request()
 	require.Equal(t, http.StatusOK, status)
 	require.Equal(t, false, result["valid"], "a changed reminder instant invalidates the old dispatch")
+}
+
+func TestAccountDeletionCleanupLeavesTombstoneAndBlocksWrites(t *testing.T) {
+	srv, jwks, sqlDB := setupServerWithPublisher(t, nil, nil)
+	userID := uuid.New()
+	token := jwks.mint(t, userID.String(), time.Hour)
+	payload, err := json.Marshal(map[string]any{
+		"title": "to erase", "start_at": "2026-10-01T10:00:00Z",
+		"reminders": []map[string]any{{"minutes_before": 10, "channel": "telegram"}},
+	})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules", bytes.NewReader(payload))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "account-delete-create")
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	status := resp.StatusCode
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var created scheduleJSON
+	require.NoError(t, json.Unmarshal(body, &created))
+	scheduleID := uuid.MustParse(created.ID)
+	var createRequests int
+	require.NoError(t, sqlDB.QueryRow("SELECT COUNT(*) FROM schedule_create_requests WHERE user_id = ?", userID[:]).Scan(&createRequests))
+	require.Equal(t, 1, createRequests)
+
+	coreService := service.New(sqlDB, nil, nil)
+	require.NoError(t, coreService.CleanupDeletedAccount(context.Background(), userID))
+	for _, table := range []string{"schedules", "schedule_create_requests", "schedule_mutation_requests", "ai_extractions", "ai_request_users", "ai_request_admissions"} {
+		var count int
+		require.NoError(t, sqlDB.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE user_id = ?", userID[:]).Scan(&count), table)
+		require.Zero(t, count, table+" retains deleted account data")
+	}
+	var reminders, outbox int
+	require.NoError(t, sqlDB.QueryRow("SELECT COUNT(*) FROM schedule_reminders WHERE schedule_id = ?", scheduleID[:]).Scan(&reminders))
+	require.NoError(t, sqlDB.QueryRow("SELECT COUNT(*) FROM event_outbox WHERE schedule_id = ?", scheduleID[:]).Scan(&outbox))
+	require.Zero(t, reminders)
+	require.Zero(t, outbox)
+	var tombstones int
+	require.NoError(t, sqlDB.QueryRow("SELECT COUNT(*) FROM account_deletion_tombstones WHERE user_id = ?", userID[:]).Scan(&tombstones))
+	require.Equal(t, 1, tombstones)
+
+	status, body = doRequest(t, srv.Client(), http.MethodPost, srv.URL+"/schedules", token, map[string]any{"title": "late write", "start_at": "2026-10-02T10:00:00Z"})
+	require.Equal(t, http.StatusGone, status, string(body))
 }
 
 func doRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {

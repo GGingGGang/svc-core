@@ -1,0 +1,4 @@
+CREATE TABLE account_deletion_tombstones (
+  user_id BINARY(16) NOT NULL PRIMARY KEY,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB;

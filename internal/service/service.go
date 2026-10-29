@@ -25,6 +25,7 @@ var ErrIdempotencyConflict = errors.New("idempotency key reused with different c
 var ErrInvalidReminder = errors.New("invalid reminder")
 var ErrReminderLimit = errors.New("reminder limit reached")
 var ErrDuplicateReminder = errors.New("duplicate reminder")
+var ErrAccountDeleted = errors.New("account has been deleted")
 
 type Service struct {
 	q      *repo.Queries

@@ -65,6 +65,10 @@ func (h *Handler) ExtractSchedules(w http.ResponseWriter, r *http.Request) {
 		APIKey:   r.Header.Get("X-Gemini-Key"),
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrAccountDeleted) {
+			writeError(w, http.StatusGone, "account has been deleted")
+			return
+		}
 		if errors.Is(err, service.ErrExtractBusy) {
 			writeError(w, http.StatusTooManyRequests, "extraction already in progress")
 			return

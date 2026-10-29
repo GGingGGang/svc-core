@@ -108,6 +108,10 @@ func (h *Handler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Idempotency-Key reused with different content")
 		return
 	}
+	if errors.Is(err, service.ErrAccountDeleted) {
+		writeError(w, http.StatusGone, "account has been deleted")
+		return
+	}
 	if errors.Is(err, service.ErrReminderLimit) || errors.Is(err, service.ErrDuplicateReminder) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -490,6 +494,10 @@ func (h *Handler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusPreconditionFailed, "schedule changed; reload and retry")
 		return
 	}
+	if errors.Is(err, service.ErrAccountDeleted) {
+		writeError(w, http.StatusGone, "account has been deleted")
+		return
+	}
 	if errors.Is(err, service.ErrInvalidSchedule) {
 		writeError(w, http.StatusBadRequest, "end_at must be at least 1ms after start_at")
 		return
@@ -631,6 +639,10 @@ func (h *Handler) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "schedule not found")
 		return
 	}
+	if errors.Is(err, service.ErrAccountDeleted) {
+		writeError(w, http.StatusGone, "account has been deleted")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete schedule")
 		return
@@ -696,6 +708,10 @@ func (h *Handler) BulkDeleteSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "one or more schedules not found")
+		return
+	}
+	if errors.Is(err, service.ErrAccountDeleted) {
+		writeError(w, http.StatusGone, "account has been deleted")
 		return
 	}
 	if err != nil {

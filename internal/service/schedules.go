@@ -39,6 +39,9 @@ func (s *Service) CreateSchedule(ctx context.Context, userID uuid.UUID, in Creat
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	if in.IdempotencyKey != "" {
 		if previous, err := claimScheduleCreate(ctx, tx, userID, in); err != nil || previous != nil {
 			return previous, err
@@ -284,6 +287,9 @@ func (s *Service) UpdateSchedule(ctx context.Context, userID, id uuid.UUID, patc
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	if key != "" {
 		response, replay, err := claimScheduleMutation(ctx, tx, userID, id, "update", key, requestHash)
 		if err != nil {
@@ -426,6 +432,9 @@ func (s *Service) DeleteSchedule(ctx context.Context, userID, id uuid.UUID, key 
 		return err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return err
+	}
 	if key != "" {
 		replayedHash := sha256.Sum256(idBytes(id))
 		_, replay, err := claimScheduleMutation(ctx, tx, userID, id, "delete", key, replayedHash)
@@ -498,6 +507,9 @@ func (s *Service) BulkDeleteSchedules(ctx context.Context, userID uuid.UUID, ids
 		return 0, err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return 0, err
+	}
 	if key != "" {
 		response, replay, err := claimScheduleMutation(ctx, tx, userID, uuid.Nil, "bulk-delete", key, requestHash)
 		if err != nil {

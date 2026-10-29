@@ -47,7 +47,7 @@ func TestMigrateUpFromVersionOne(t *testing.T) {
 	var version int
 	var dirty bool
 	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty))
-	require.Equal(t, 9, version)
+	require.Equal(t, 10, version)
 	require.False(t, dirty)
 	_, err = sqlDB.ExecContext(ctx, "ALTER TABLE schedules DROP COLUMN revision")
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestMigrateUpFromVersionOne(t *testing.T) {
 	require.NoError(t, err)
 	var dirtyErr migrate.ErrDirty
 	require.ErrorAs(t, MigrateUp(ctx, cfg), &dirtyErr, "dirty migration history must stop startup")
-	require.Equal(t, 9, dirtyErr.Version)
+	require.Equal(t, 10, dirtyErr.Version)
 	_, err = sqlDB.ExecContext(ctx, "DROP TABLE schedule_reminders")
 	require.NoError(t, err)
 	require.ErrorIs(t, CheckReady(ctx, sqlDB), ErrRequiredSchema)

@@ -30,6 +30,10 @@ func (h *Handler) ListReminders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "schedule not found")
 		return
 	}
+	if errors.Is(err, service.ErrAccountDeleted) {
+		writeError(w, http.StatusGone, "account has been deleted")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list reminders")
 		return
@@ -93,6 +97,10 @@ func (h *Handler) AddReminder(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
+	if errors.Is(err, service.ErrAccountDeleted) {
+		writeError(w, http.StatusGone, "account has been deleted")
 		return
 	}
 	if err != nil {

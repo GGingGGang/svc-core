@@ -23,6 +23,7 @@ func CheckReady(ctx context.Context, sqlDB *sql.DB) error {
 		{"event_outbox", "id,subject,schedule_id,occurred_at,payload,headers,attempts,available_at,locked_until,locked_by,last_error,published_at,created_at"},
 		{"schedule_create_requests", "user_id,idempotency_key,request_hash,response_json,expires_at"},
 		{"schedule_mutation_requests", "user_id,operation,idempotency_key,schedule_id,request_hash,response_json,expires_at"},
+		{"account_deletion_tombstones", "user_id,created_at"},
 	} {
 		rows, err := sqlDB.QueryContext(ctx, "SELECT "+check.columns+" FROM "+check.table+" LIMIT 0")
 		if err != nil {

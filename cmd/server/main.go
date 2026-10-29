@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/GGingGGang/svc-core/internal/accountdeletion"
 	"github.com/GGingGGang/svc-core/internal/ai"
 	"github.com/GGingGGang/svc-core/internal/api"
 	"github.com/GGingGGang/svc-core/internal/config"
@@ -67,6 +68,7 @@ func main() {
 
 	coreService := service.New(sqlDB, publisher, aiClient)
 	go coreService.RunOutbox(ctx)
+	go accountdeletion.Run(ctx, cfg.NATSURL, coreService.CleanupDeletedAccount)
 	handler := api.NewHandlerWithInternal(coreService, func(ctx context.Context) error {
 		return db.CheckReady(ctx, sqlDB)
 	}, api.InternalServiceConfig{Token: cfg.InternalServiceToken, AuthAccountStatusURL: cfg.AuthAccountStatusURL, NotifyInternalBaseURL: cfg.NotifyInternalBaseURL})

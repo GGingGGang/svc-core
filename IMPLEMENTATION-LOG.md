@@ -20,7 +20,7 @@
 - `SCH-017`: 일정 복제 API/검증/테스트.
 - `EXT-001~009`: 반복 규칙·예외·ICS export와 import-preview/명시적 확정 저장은 미구현이다. 외부 임의 URL fetch를 허용하지 않는 preview ID/소유권/만료/중복 처리 계약과 bounded 반복 정책을 확정하고 구현해야 한다.
 - `AIX-016`: 문서에 정의된 중복 감지 동작 및 중복 확인 회귀 테스트가 남아 있다.
-- `POL-29`/계정 삭제: Auth의 삭제 요청 구독, durable user tombstone, 일정·리마인더·추출·멱등 응답·outbox·preview·반복 데이터의 트랜잭션 cleanup 및 ACK는 아직 미구현이다.
+- `POL-29`/계정 삭제: migration 000010에서 user UUID tombstone을 만든다. Auth-owned `ACCOUNT_LIFECYCLE`에 durable consumer를 연결해 삭제 요청을 처리하고, schedules/reminders, extraction metadata, create/mutation idempotency, AI admission state, 사용자 outbox payload를 같은 트랜잭션에서 제거한다. 삭제 처리 뒤 모든 쓰기 트랜잭션이 tombstone을 확인하고 410으로 거절한다. 결과 이벤트는 정리 완료 후 `completed`; 실패 시 `retry`를 보내 Auth 재처리를 요청한다. Preview/반복 테이블은 해당 기능 구현 때 같은 cleanup 트랜잭션에 포함해야 한다.
 
 ## 검증
 
@@ -28,4 +28,4 @@
 - `go test -tags=integration -run '^$' ./internal/api ./internal/db` 통과(통합 테스트 컴파일 확인).
 - OpenAPI YAML 파싱 통과.
 - Docker CLI/daemon을 사용할 수 없어 MySQL/NATS 컨테이너 통합 테스트는 실행하지 못했다.
-- DST 경계, 리마인더 instant, 내부 토큰 비교의 단위 테스트를 추가했다. DB 의존 validity 시나리오(메타데이터 revision 유지 및 변경 instant 거부)는 통합 테스트에 작성했으나 Docker 부재로 실행은 확인하지 못했다.
+- DST 경계, 리마인더 instant, 내부 토큰 비교의 단위 테스트를 추가했다. DB 의존 validity 시나리오(메타데이터 revision 유지 및 변경 instant 거부)와 계정 삭제 통합 시나리오도 작성했으나 Docker 부재로 실행은 확인하지 못했다.

@@ -82,6 +82,9 @@ func (s *Service) admitExtraction(ctx context.Context, userID uuid.UUID) (uuid.U
 		return uuid.Nil, err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return uuid.Nil, err
+	}
 	if _, err := tx.ExecContext(ctx, "INSERT IGNORE INTO ai_request_users (user_id) VALUES (?)", idBytes(userID)); err != nil {
 		return uuid.Nil, err
 	}
@@ -127,7 +130,16 @@ func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, inputB
 		return
 	}
 
-	if err := s.q.CreateExtraction(ctx, repo.CreateExtractionParams{
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("ERROR begin ai_extractions audit transaction failed")
+		return
+	}
+	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return
+	}
+	if err := s.q.WithTx(tx).CreateExtraction(ctx, repo.CreateExtractionParams{
 		ID:         idBytes(id),
 		UserID:     idBytes(userID),
 		Model:      s.aiClnt.Model(),
@@ -136,6 +148,10 @@ func (s *Service) recordExtraction(ctx context.Context, userID uuid.UUID, inputB
 		LatencyMs:  sql.NullInt32{Int32: latencyMs, Valid: true},
 	}); err != nil {
 		log.Printf("ERROR record ai_extractions audit row failed")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("ERROR commit ai_extractions audit transaction failed")
 	}
 }
 

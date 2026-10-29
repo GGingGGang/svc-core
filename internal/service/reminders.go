@@ -70,6 +70,9 @@ func (s *Service) AddReminder(ctx context.Context, userID, scheduleID uuid.UUID,
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	if key != "" {
 		response, replay, err := claimScheduleMutation(ctx, tx, userID, scheduleID, "reminder-add", key, requestHash)
 		if err != nil {
@@ -177,6 +180,9 @@ func (s *Service) DeleteReminder(ctx context.Context, userID, scheduleID, remind
 		return err
 	}
 	defer tx.Rollback()
+	if err := ensureAccountNotDeleted(ctx, tx, userID); err != nil {
+		return err
+	}
 	if key != "" {
 		hash := sha256.Sum256(idBytes(reminderID))
 		_, replay, err := claimScheduleMutation(ctx, tx, userID, scheduleID, "reminder-delete", key, hash)

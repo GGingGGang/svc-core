@@ -208,6 +208,23 @@ func (c *Client) attempt(ctx context.Context, key string, body []byte) (*Extract
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusBadRequest {
+			var failure struct {
+				Error struct {
+					Details []struct {
+						Type   string `json:"@type"`
+						Reason string `json:"reason"`
+					} `json:"details"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(respBody, &failure) == nil {
+				for _, detail := range failure.Error.Details {
+					if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == "API_KEY_INVALID" {
+						return nil, ErrInvalidAPIKey
+					}
+				}
+			}
+		}
 		return nil, &upstreamStatusError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
 

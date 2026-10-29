@@ -154,6 +154,34 @@ func TestExtract_InvalidAPIKey(t *testing.T) {
 	require.ErrorIs(t, err, ai.ErrInvalidAPIKey)
 }
 
+func TestExtract_InvalidPrivateKeyDoesNotUseSharedKey(t *testing.T) {
+	for _, retryFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "first_response", true: "after_retry"}[retryFirst], func(t *testing.T) {
+			var calls atomic.Int32
+			var usedSharedKey atomic.Bool
+			srv := stubGeminiServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("x-goog-api-key") != "invalid-private-key" {
+					usedSharedKey.Store(true)
+				}
+				if calls.Add(1) == 1 && retryFirst {
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID"}]}}`))
+			})
+			_, err := ai.New(srv.URL, "gemini-test", "shared-key").Extract(context.Background(), "invalid-private-key", ai.ExtractInput{Text: "meeting", Now: time.Now(), Timezone: "UTC"})
+			require.ErrorIs(t, err, ai.ErrInvalidAPIKey)
+			require.False(t, usedSharedKey.Load())
+			wantCalls := int32(1)
+			if retryFirst {
+				wantCalls++
+			}
+			require.Equal(t, wantCalls, calls.Load())
+		})
+	}
+}
+
 func TestExtract_ModelUnavailable(t *testing.T) {
 	var calls atomic.Int32
 	srv := stubGeminiServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -261,5 +289,6 @@ func TestExtract_NonRetryableErrorFailsImmediately(t *testing.T) {
 
 	var rl *ai.RateLimitedError
 	require.False(t, errors.As(err, &rl), "a plain 400 must not be classified as rate limited")
+	require.NotErrorIs(t, err, ai.ErrInvalidAPIKey, "a plain 400 is not evidence of an invalid key")
 	require.Equal(t, int32(1), atomic.LoadInt32(&attempts), "no retry for a non-retryable status")
 }
